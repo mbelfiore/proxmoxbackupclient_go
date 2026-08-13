@@ -56,6 +56,17 @@ type Partition struct {
 	Letter      string
 }
 
+// fixedIndexClient is the narrow PBS protocol surface used by the FIDX writer.
+// Keeping this boundary small permits an in-memory correctness harness without
+// changing the production protocol implementation.
+type fixedIndexClient interface {
+	GetKnownSha265FromFIDX(string) (*haxmap.Map[string, bool], error)
+	CreateFixedIndex(pbscommon.FixedIndexCreateReq) (uint64, error)
+	UploadFixedCompressedChunk(uint64, string, []byte) error
+	AssignFixedChunks(uint64, []string, []uint64) error
+	CloseFixedIndex(uint64, string, uint64, uint64) error
+}
+
 func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, knownChunks *haxmap.Map[string, bool]) {
 	c.assignments = make([]string, 0)
 	c.assignments_offset = make([]uint64, 0)
@@ -85,7 +96,7 @@ func BytesToString(b int64) string {
 
 }
 
-func uploadWorker(client *pbscommon.PBSClient, filename string, total_size uint64, ch chan []byte) error {
+func uploadWorker(client fixedIndexClient, filename string, total_size uint64, ch chan []byte) error {
 	var newchunk *atomic.Uint64 = new(atomic.Uint64)
 	var reusechunk *atomic.Uint64 = new(atomic.Uint64)
 	knownChunks := haxmap.New[string, bool]()
@@ -232,6 +243,17 @@ func Slugify(input string) string {
 	return s
 }
 
+var physicalDrivePattern = regexp.MustCompile(`^\\\\\.\\PhysicalDrive(\d+)$`)
+
+func physicalDriveIndex(path string) (int, bool) {
+	matches := physicalDrivePattern.FindStringSubmatch(path)
+	if matches == nil {
+		return 0, false
+	}
+	idx, err := strconv.ParseInt(matches[1], 10, 32)
+	return int(idx), err == nil
+}
+
 //TODO: Perhaps on linux we could use that https://github.com/datto/dattobd for block devices
 
 func backupFileDevice(client *pbscommon.PBSClient, filename string) error {
@@ -324,17 +346,13 @@ func main() {
 	disks := make([]BackupDisk, 0)
 
 	for _, dev := range cfg.BackupDevices {
-		if strings.HasPrefix(dev, "\\\\.\\PhysicalDrive") {
-
-			re := regexp.MustCompile(`PhysicalDrive(\d+)$`)
-			matches := re.FindStringSubmatch(dev)
-			idx, _ := strconv.ParseInt(matches[1], 10, 32)
-			size, err := backupWindowsDisk(client, int(idx))
+		if idx, ok := physicalDriveIndex(dev); ok {
+			size, err := backupWindowsDisk(client, idx)
 			if err != nil {
 				panic(err)
 			}
 			disks = append(disks, BackupDisk{
-				Index: int(idx),
+				Index: idx,
 				Size:  size,
 			})
 		} else {
