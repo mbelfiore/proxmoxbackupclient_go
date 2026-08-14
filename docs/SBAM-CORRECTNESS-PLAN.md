@@ -14,13 +14,13 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | FIDX duplicates | In-job dedup | Two identical 4 MiB chunks | One upload may satisfy two offsets; exact reconstruction | PASS | Uses recorded digest store |
 | Worker reorder | Concurrent completion ordering | Three chunks released through explicit barriers in reverse order | Non-monotonic assignments, exact reconstruction, and correct ordered checksum | PASS | Deterministic; official PBS writes each digest at the chunk position derived from offset and size |
 | PBS 200 recorder | Call coverage | Create/upload/assign/close/blob/manifest/finish | All calls recorded | PASS | `httptest`, no PBS server |
-| UploadBlob non-2xx | False success | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Production bug intentionally unfixed |
-| UploadManifest non-2xx | False success | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Delegates to UploadBlob |
+| UploadBlob non-2xx | False success | 400/401/403/500 | Non-nil error with method, path, status, and bounded body | PASS | Production bug intentionally unfixed |
+| UploadManifest non-2xx | False success | 400/401/403/500 | Non-nil error with method, path, status, and bounded body | PASS | Delegates to UploadBlob |
 | Finish non-2xx | False job success | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Production bug intentionally unfixed |
 | AssignFixedChunks non-2xx | Missing index entries | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Production bug intentionally unfixed |
 | CloseFixedIndex non-2xx | Invalid/incomplete FIDX | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Manifest mutation also needs later assertion |
-| Fingerprint mismatch | MITM/certificate trust | Self-signed mismatching DER | Current acceptance demonstrated | CHARACTERIZED | Production bug intentionally unfixed |
-| PhysicalDrive casing | Issue #75 routing | Four case combinations | Canonical form recognized; current rejection of other casing demonstrated | CHARACTERIZED | Pure string test; no device open; production fix deferred |
+| Fingerprint mismatch | MITM/certificate trust | Correct, normalized, incorrect, and insecure+pinned fingerprints | Correct pins accepted; mismatches rejected | PASS | Regression coverage added in Phase 2A |
+| PhysicalDrive casing | Issue #75 routing | Four case combinations | All valid casing variants resolve to the same index | PASS | Pure string test; no device open |
 | Layout ordering | Incorrect gap plan | Ordered and shuffled partitions | Normalize to identical ordered coverage | PASS | GPT and MBR |
 | Layout overlap | Ambiguous reads | Overlapping partitions | Reject before acquisition | PASS | Synthetic model |
 | Layout beyond disk | Issue #72/source corruption | End > physical size | Reject as invalid source layout | PASS | Distinct from writer overrun |
@@ -43,7 +43,7 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 The Phase 1 validation was run with module-specific commands rather than a repository-root `go test ./...` claim:
 
 - `machinebackup`: tests passed; `go vet` passed; Linux build passed; Windows amd64 cross-build passed.
-- `pbscommon`: characterization tests passed with `-vet=off`. Standard `go test` does not pass because `go vet` detects the pre-existing `pbsapi.go` `fmt.Errorf` call with arguments but no formatting directives; that production defect is intentionally not fixed in this phase.
+- `pbscommon`: regression tests, `go vet`, and build pass after Phase 2A fail-closed HTTP, response-body lifecycle, and TLS pinning fixes.
 - `directorybackup`: Linux and Windows amd64 builds passed.
 - `nbd`: Linux build passed.
 - `git diff --check`: passed.

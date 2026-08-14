@@ -252,7 +252,7 @@ func Slugify(input string) string {
 	return s
 }
 
-var physicalDrivePattern = regexp.MustCompile(`^\\\\\.\\PhysicalDrive(\d+)$`)
+var physicalDrivePattern = regexp.MustCompile(`(?i)^\\\\\.\\physicaldrive(\d+)$`)
 
 func physicalDriveIndex(path string) (int, bool) {
 	matches := physicalDrivePattern.FindStringSubmatch(path)

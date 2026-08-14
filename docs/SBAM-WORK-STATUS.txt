@@ -2,7 +2,8 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-14 - FASE 1, correctness harness FIDX/PBS, modello DiskLayout sintetico e report di validazione.
+2026-08-14 - FASE 2A CORE HARDENING PBS/TLS/PHYSICALDRIVE.
+Fail-closed PBS API, TLS certificate pinning, response lifecycle e device routing.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
@@ -14,79 +15,85 @@ GitHub PR head previsto: codex/locate-mbelfiore/proxmoxbackupclient_go
 PULL REQUEST:
 PR #1
 URL: https://github.com/mbelfiore/proxmoxbackupclient_go/pull/1
-Draft: NON VERIFICABILE finché l'accesso GitHub resta bloccato.
+Draft: sì secondo lo stato comunicato; nessuna operazione remota eseguita in Fase 2A.
 
 BASE COMMIT:
-519b62425a7da0ec137e7c86e17993c9bd409d59 (base locale upstream/master della FASE 1)
+519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-97c048a37a530167c0ce98d83dc42bb716bca655 prima dell'aggiunta di questo status report; il commit che include questo file è riportato nel messaggio finale e nelle ultime operazioni Git.
+7730d95baf2d57e6f53ec5ca44f12be9304e5cec prima del commit Fase 2A.
+Lo SHA del commit che include questo report è registrato nel manifest di esportazione.
 
 ULTIMO COMMIT GITHUB:
-NON VERIFICATO / NON PUBBLICATO al momento della creazione del report: accesso GitHub bloccato dal proxy e nessuna credenziale GitHub disponibile.
+Non aggiornato da questo ambiente; la Fase 2A viene trasferita tramite SBAM-CODEX-EXPORT.patch.
 
 FILE MODIFICATI:
-- AGENTS.md
 - docs/SBAM-CORE-AUDIT.md
 - docs/SBAM-CORRECTNESS-PLAN.md
 - docs/SBAM-WORK-STATUS.txt
-- machinebackup/disk_layout.go
-- machinebackup/disk_layout_test.go
-- machinebackup/fidx_harness_test.go
 - machinebackup/main.go
 - machinebackup/physicaldrive_test.go
+- pbscommon/pbsapi.go
 - pbscommon/pbsapi_characterization_test.go
-Nota: go.work.sum resta preesistente e non tracciato; non è incluso nei commit.
+Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
 
 LAVORO ESEGUITO:
-- Creato harness FIDX interamente in memoria con ricostruzione byte-per-byte.
-- Coperti input vuoto, corto, 4 MiB, 4 MiB+1, multi-chunk, zero, duplicati e ultimo chunk corto.
-- Reso deterministico il test concorrente out-of-order tramite channel/barrier, senza time.Sleep.
-- Verificati avvio concorrente, completamento inverso, offset non monotoni, ricostruzione e checksum.
-- Documentata la semantica PBS ufficiale: offset+size determinano la posizione FIDX; ordine monotono non richiesto.
-- Lasciata invariata la pipeline produttiva: nessun riordinamento artificiale delle assignment.
-- Creato DiskLayout esclusivamente sintetico/testabile, non collegato all'acquisizione Windows.
-- Aggiunti PBS mock e characterization test per status HTTP e fingerprint TLS.
-- Documentata la distinzione issue #72 tra layout sorgente invalido e vero writer overrun.
-- Caratterizzato il routing PhysicalDrive case-sensitive collegato all'issue #75.
+- Introdotto controllo comune fail-closed per risposte PBS non-2xx.
+- Errori PBS includono metodo, path, status code/text e body limitato a 8 KiB.
+- Corretti Create/Assign/Close Fixed Index, chunk upload, blob, manifest e finish.
+- Applicato lo stesso helper alle equivalenti API Dynamic Index dove sicuro e comune.
+- Garantita chiusura dei response body e drain dei body di successo per connection reuse.
+- Corretto fmt.Errorf privo di direttive tramite il nuovo errore HTTP strutturato.
+- Implementato pinning SHA-256 esatto per certificati anche self-signed.
+- Normalizzati fingerprint equivalenti con separatori ':' e casing differente.
+- Preservate CA validation senza fingerprint e modalità insecure esplicita senza fingerprint.
+- Reso PhysicalDrive case-insensitive senza aprire dispositivi reali.
+- Trasformati characterization test HTTP/TLS/PhysicalDrive in regression test.
+- Aggiunto test di workflow: un fallimento server-side critico impedisce manifest e finish.
+- Aggiunti test espliciti di chiusura response body.
+- Non modificata la pipeline concorrente degli 8 worker.
 
 TEST PASSATI:
+- cd pbscommon && go test -count=1 . -> PASS
+- cd pbscommon && go vet . -> PASS
+- cd pbscommon && go build . -> PASS
 - cd machinebackup && go test -count=1 . -> PASS
 - cd machinebackup && go vet . -> PASS
-- cd machinebackup && go build -o /tmp/sbam-machine-linux . -> PASS
-- cd machinebackup && GOOS=windows GOARCH=amd64 go build -o /tmp/sbam-machine-windows-amd64.exe . -> PASS
-- cd pbscommon && go test -vet=off -count=1 . -> PASS
-- cd directorybackup && go build -o /tmp/sbam-directory-linux . -> PASS
-- cd directorybackup && GOOS=windows GOARCH=amd64 go build -o /tmp/sbam-directory-windows-amd64.exe . -> PASS
-- cd nbd && go build -o /tmp/sbam-nbd-linux . -> PASS
+- cd machinebackup && go build . -> PASS
+- cd machinebackup && GOOS=windows GOARCH=amd64 go build . -> PASS
+- cd directorybackup && go test -count=1 . -> PASS (nessun test file)
+- cd directorybackup && go build . -> PASS
+- cd directorybackup && GOOS=windows GOARCH=amd64 go build . -> PASS
+- cd nbd && go build . -> PASS
 - git diff --check -> PASS
 
 TEST FALLITI / WARNING:
-- cd pbscommon && go test -count=1 . -> FAIL per debito preesistente rilevato dal vet automatico:
-  pbsapi.go:176:49: fmt.Errorf call has arguments but no formatting directives.
-- Pubblicazione GitHub -> BLOCKED: HTTPS CONNECT tunnel 403; SSH DNS non disponibile; gh non autenticato.
-- Verifica remota PR #1/Draft/base/head/file/descrizione -> BLOCKED per lo stesso limite infrastrutturale.
+- Nessun test richiesto fallito.
+- Warning: go.work.sum preesistente resta non tracciato.
+- Warning: nessuna pubblicazione GitHub tentata, per istruzione esplicita.
 
 BUG CONFERMATI ANCORA APERTI:
-- Alcune chiamate PBS possono restituire nil su HTTP 400/401/403/500.
-- Fingerprint TLS non corrispondente attualmente accettato nel percorso caratterizzato.
-- Riconoscimento PhysicalDrive case-sensitive (issue #75).
-- newchunk non incrementato nel machine writer; reusechunk non propagato; ChunkUploadStats non popolato.
-- Gestione error channel/cancellazione worker potenzialmente bloccante.
-- Mapping volume/mount-point, VSS multi-volume/writer state/cleanup ancora incompleti.
-- fmt.Errorf senza formatting directives in pbsapi.go:176.
+- Worker cancellation, error-channel cardinality e goroutine lifecycle (Fase 2B).
+- Producer panic e propagazione errori concorrenti (Fase 2B).
+- newchunk/reusechunk e ChunkUploadStats non completati.
+- VSS consistency multi-volume, writer state, cleanup e padding da testare.
+- Mapping Windows volume/GUID/mount-point incompleto.
+- DiskLayout sintetico non ancora collegato al percorso produttivo.
+- P2V non pronto per produzione; NBD hardening ancora aperto.
 
 BUG RISOLTI:
-- Eliminata la dipendenza da wall clock/time.Sleep nel test FIDX out-of-order.
-- Eliminata dalla documentazione l'ipotesi errata che PBS richieda assignment FIDX monotone.
-- Nessun bug del motore produttivo corretto in questa fase, per scelta esplicita.
+- PBS non-2xx false success per il percorso API oggetto della Fase 2A.
+- TLS fingerprint mismatch, incluso Insecure=true con fingerprint configurato.
+- PhysicalDrive casing (issue #75).
+- fmt.Errorf/go vet in pbsapi.go.
+- Response-body leak nelle API PBS corrette e testate in questa fase.
 
 IPOTESI / LAVORO ANCORA APERTO:
-- Test del vero writer overrun dopo introduzione di cancellazione sicura.
-- Adapter Windows sintetico per mapping volume, GUID e mount-point.
-- Test VSS multi-volume, writer state, cleanup e padding.
-- Semantica e popolamento delle statistiche upstream esistenti.
-- Hardening HTTP/TLS e verifica post-upload in una fase successiva.
+- Fase 2B: cancellazione strutturata e lifecycle degli 8 worker.
+- Semantica e popolamento statistiche upstream esistenti.
+- Adapter Windows testabile per layout e mount mapping.
+- Policy VSS application-consistent e verifica post-upload.
+- Readiness P2V e hardening NBD.
 
 OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun PhysicalDrive reale.
@@ -95,18 +102,17 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun merge su master.
 
 STATO FINALE:
-BLOCKED
-Motivo: codice e validazione locali completi; pubblicazione/verifica GitHub impedita dall'infrastruttura di rete/autenticazione disponibile.
+PASS
 
 PROSSIMO PASSO CONSIGLIATO:
-Fornire al workspace un canale GitHub autenticato e consentito dal proxy.
-Pubblicare HEAD su codex/locate-mbelfiore/proxmoxbackupclient_go.
-Aggiornare la descrizione Testing della sola PR #1.
-Verificare Draft, base master, head corretto e presenza di questo file.
-Non eseguire merge.
+Avviare FASE 2B worker cancellation/concurrency.
+Scrivere prima test deterministici per errori di ogni worker.
+Introdurre context/errgroup senza cambiare semantica FIDX.
+Verificare assenza di goroutine bloccate e false completion.
 
 ULTIME OPERAZIONI GIT:
+- 7730d95 Refine SBAM correctness harness and status report
 - 97c048a Refine SBAM correctness harness
 - 38868a3 Add FIDX in-memory harness, synthetic DiskLayout model, PBS protocol characterization, and repo rules/docs
-- 519b624 Base locale della FASE 1
-- Working tree prima del commit status: solo docs/SBAM-WORK-STATUS.txt nuovo; go.work.sum preesistente non tracciato.
+- 519b624 Base upstream originale
+- Working tree Fase 2A: soli file pertinenti; go.work.sum non tracciato escluso.

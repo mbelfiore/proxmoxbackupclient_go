@@ -107,6 +107,65 @@ const PBS_FIXED_CHUNK_SIZE = 4 * 1024 * 1024
 var blobCompressedMagic = []byte{49, 185, 88, 66, 111, 182, 163, 127}
 var blobUncompressedMagic = []byte{66, 171, 56, 7, 190, 131, 112, 161}
 
+const maxHTTPErrorBody = 8 * 1024
+
+func checkHTTPResponse(req *http.Request, resp *http.Response) error {
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		return nil
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHTTPErrorBody+1))
+	truncated := len(body) > maxHTTPErrorBody
+	if truncated {
+		body = body[:maxHTTPErrorBody]
+	}
+	detail := strings.TrimSpace(string(body))
+	if truncated {
+		detail += " [truncated]"
+	}
+	if readErr != nil {
+		detail = fmt.Sprintf("unable to read response body: %v", readErr)
+	}
+	if detail == "" {
+		detail = "empty response body"
+	}
+	return fmt.Errorf("PBS %s %s failed: %d %s: %s", req.Method, req.URL.Path, resp.StatusCode, http.StatusText(resp.StatusCode), detail)
+}
+
+func normalizeFingerprint(value string) ([]byte, error) {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), ":", ""))
+	decoded, err := hex.DecodeString(normalized)
+	if err != nil || len(decoded) != sha256.Size {
+		return nil, fmt.Errorf("invalid SHA-256 certificate fingerprint")
+	}
+	return decoded, nil
+}
+
+func (pbs *PBSClient) configureTLS(config *tls.Config) {
+	fingerprint := strings.TrimSpace(pbs.CertFingerPrint)
+	*config = tls.Config{InsecureSkipVerify: pbs.Insecure}
+	if fingerprint == "" {
+		return
+	}
+
+	// A configured fingerprint is the trust policy, including for self-signed
+	// certificates, so normal CA verification is replaced by exact pinning.
+	config.InsecureSkipVerify = true
+	expected, fingerprintErr := normalizeFingerprint(fingerprint)
+	config.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("no certificates presented by the peer")
+		}
+		calculated := sha256.Sum256(rawCerts[0])
+		if !bytes.Equal(calculated[:], expected) {
+			return fmt.Errorf("certificate fingerprint does not match")
+		}
+		return nil
+	}
+}
+
 type SnapshotsResp struct {
 	Data []BackupManifest `json:"data"`
 }
@@ -115,11 +174,11 @@ func (pbs *PBSClient) ListSnapshots() ([]BackupManifest, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-	if pbs.Insecure {
+	if pbs.Insecure || strings.TrimSpace(pbs.CertFingerPrint) != "" {
+		tlsConfig := &tls.Config{}
+		pbs.configureTLS(tlsConfig)
 		tr := &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
+			TLSClientConfig: tlsConfig,
 		}
 		client.Transport = tr
 	}
@@ -169,11 +228,10 @@ func (pbs *PBSClient) CreateFixedIndex(fic FixedIndexCreateReq) (uint64, error) 
 		fmt.Println("Error making request:", err)
 		return 0, err
 	}
+	defer resp2.Body.Close()
 
-	if resp2.StatusCode != http.StatusOK {
-		resp1, _ := io.ReadAll(resp2.Body)
-		fmt.Println("Error making request:", string(resp1), string(resp2.Proto))
-		return 0, fmt.Errorf("Error making request:", string(resp1), string(resp2.Proto))
+	if err := checkHTTPResponse(req, resp2); err != nil {
+		return 0, err
 	}
 
 	resp1, err := io.ReadAll(resp2.Body)
@@ -187,7 +245,6 @@ func (pbs *PBSClient) CreateFixedIndex(fic FixedIndexCreateReq) (uint64, error) 
 		return 0, err
 	}
 	fmt.Println("Writer id: ", R.WriterID)
-	defer resp2.Body.Close()
 	f := File{
 		CryptMode: "none",
 		Csum:      "",
@@ -223,6 +280,10 @@ func (pbs *PBSClient) AssignFixedChunks(writerid uint64, digests []string, offse
 		return err
 	}
 	defer resp2.Body.Close()
+	if err := checkHTTPResponse(req, resp2); err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, resp2.Body)
 	return nil
 }
 
@@ -249,13 +310,17 @@ func (pbs *PBSClient) CloseFixedIndex(writerid uint64, checksum string, totalsiz
 		fmt.Println("Error making request:", err)
 		return err
 	}
+	defer resp2.Body.Close()
+	if err := checkHTTPResponse(req, resp2); err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, resp2.Body)
 
 	f := &pbs.Manifest.Files[pbs.WritersManifest[writerid]]
 
 	f.Csum = checksum
 	f.Size = int64(totalsize)
 
-	defer resp2.Body.Close()
 	return nil
 }
 
@@ -274,10 +339,9 @@ func (pbs *PBSClient) CreateDynamicIndex(name string) (uint64, error) {
 		fmt.Println("Error making request:", err)
 		return 0, err
 	}
+	defer resp2.Body.Close()
 
-	if resp2.StatusCode != http.StatusOK {
-		resp1, err := io.ReadAll(resp2.Body)
-		fmt.Println("Error making request:", string(resp1), string(resp2.Proto))
+	if err := checkHTTPResponse(req, resp2); err != nil {
 		return 0, err
 	}
 
@@ -292,7 +356,6 @@ func (pbs *PBSClient) CreateDynamicIndex(name string) (uint64, error) {
 		return 0, err
 	}
 	fmt.Println("Writer id: ", R.WriterID)
-	defer resp2.Body.Close()
 	f := File{
 		CryptMode: "none",
 		Csum:      "",
@@ -365,13 +428,12 @@ func (pbs *PBSClient) UploadChunk(writerid uint64, digest string, chunkdata []by
 		fmt.Println("Error making request:", err)
 		return err
 	}
+	defer resp2.Body.Close()
 
-	if resp2.StatusCode != http.StatusOK {
-		resp1, _ := io.ReadAll(resp2.Body)
-		fmt.Println("Error making request:", string(resp1), string(resp2.Proto))
-		return fmt.Errorf("Error making request: %s %s", string(resp1), string(resp2.Proto))
+	if err := checkHTTPResponse(req, resp2); err != nil {
+		return err
 	}
-
+	_, _ = io.Copy(io.Discard, resp2.Body)
 	return nil
 }
 
@@ -398,6 +460,10 @@ func (pbs *PBSClient) AssignDynamicChunks(writerid uint64, digests []string, off
 		return err
 	}
 	defer resp2.Body.Close()
+	if err := checkHTTPResponse(req, resp2); err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, resp2.Body)
 	return nil
 }
 
@@ -424,13 +490,17 @@ func (pbs *PBSClient) CloseDynamicIndex(writerid uint64, checksum string, totals
 		fmt.Println("Error making request:", err)
 		return err
 	}
+	defer resp2.Body.Close()
+	if err := checkHTTPResponse(req, resp2); err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, resp2.Body)
 
 	f := &pbs.Manifest.Files[pbs.WritersManifest[writerid]]
 
 	f.Csum = checksum
 	f.Size = int64(totalsize)
 
-	defer resp2.Body.Close()
 	return nil
 }
 
@@ -446,19 +516,22 @@ func (pbs *PBSClient) UploadBlob(name string, data []byte) error {
 	q.Add("encoded-size", fmt.Sprintf("%d", len(out)))
 	q.Add("file-name", name)
 
-	req, _ := http.NewRequest("POST", pbs.BaseURL+"/blob?"+q.Encode(), bytes.NewBuffer(out))
+	req, err := http.NewRequest("POST", pbs.BaseURL+"/blob?"+q.Encode(), bytes.NewBuffer(out))
+	if err != nil {
+		return err
+	}
 
 	resp2, err := pbs.Client.Do(req)
 	if err != nil {
 		fmt.Println("Error making request:", err)
 		return err
 	}
+	defer resp2.Body.Close()
 
-	if resp2.StatusCode != http.StatusOK {
-		resp1, err := io.ReadAll(resp2.Body)
-		fmt.Println("Error making request:", string(resp1), string(resp2.Proto))
+	if err := checkHTTPResponse(req, resp2); err != nil {
 		return err
 	}
+	_, _ = io.Copy(io.Discard, resp2.Body)
 
 	pbs.Manifest.Files = append(pbs.Manifest.Files, File{
 		CryptMode: "none",
@@ -480,18 +553,20 @@ func (pbs *PBSClient) UploadManifest() error {
 
 func (pbs *PBSClient) Finish() error {
 	req, err := http.NewRequest("POST", pbs.BaseURL+"/finish", nil)
-	req.Header.Add("Authorization", fmt.Sprintf("PBSAPIToken=%s:%s", pbs.AuthID, pbs.Secret))
 	if err != nil {
 		return err
 	}
+	req.Header.Add("Authorization", fmt.Sprintf("PBSAPIToken=%s:%s", pbs.AuthID, pbs.Secret))
 	resp2, err := pbs.Client.Do(req)
 	if err != nil {
 		fmt.Println("Error making request:", err)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 	defer resp2.Body.Close()
+	if err := checkHTTPResponse(req, resp2); err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, resp2.Body)
 	return nil
 }
 
@@ -506,33 +581,7 @@ func (pbs *PBSClient) Connect(reader bool, backuptype string) {
 	pbs.ZSTDDec = dec
 
 	pbs.WritersManifest = make(map[uint64]int)
-	pbs.TLSConfig = tls.Config{
-		InsecureSkipVerify: pbs.Insecure,
-	}
-	if pbs.Insecure {
-		pbs.TLSConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			// Extract the peer certificate
-			if len(rawCerts) == 0 {
-				return fmt.Errorf("no certificates presented by the peer")
-			}
-			peerCert, err := x509.ParseCertificate(rawCerts[0])
-			if err != nil {
-				return fmt.Errorf("failed to parse certificate: %v", err)
-			}
-
-			// Calculate the SHA-256 fingerprint of the certificate
-			expectedFingerprint := strings.ReplaceAll(pbs.CertFingerPrint, ":", "")
-			calculatedFingerprint := sha256.Sum256(peerCert.Raw)
-
-			// Compare the calculated fingerprint with the expected one
-			if hex.EncodeToString(calculatedFingerprint[:]) != expectedFingerprint && !pbs.Insecure {
-				return fmt.Errorf("certificate fingerprint does not match (%s,%s)", expectedFingerprint, hex.EncodeToString(calculatedFingerprint[:]))
-			}
-
-			// If the fingerprint matches, the certificate is considered valid
-			return nil
-		}
-	}
+	pbs.configureTLS(&pbs.TLSConfig)
 	if !reader {
 		pbs.Manifest.BackupTime = time.Now().Unix()
 	}
