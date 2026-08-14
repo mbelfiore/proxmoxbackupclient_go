@@ -21,11 +21,12 @@ BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-7730d95baf2d57e6f53ec5ca44f12be9304e5cec prima del commit Fase 2A.
-Lo SHA del commit che include questo report è registrato nel manifest di esportazione.
+f4fcca2 (snapshot locale contenente Fase 1 e Fase 2A prima del commit finale di riallineamento).
+Lo SHA finale è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
-Non aggiornato da questo ambiente; la Fase 2A viene trasferita tramite SBAM-CODEX-EXPORT.patch.
+2a196ef981fc7ecc0a4ae495a9a02e263d59b2a4, verificato dall'utente: contiene Fase 1 ma non Fase 2A.
+Il workspace conserva le modifiche Fase 2A da applicare sopra questo stato remoto.
 
 FILE MODIFICATI:
 - docs/SBAM-CORE-AUDIT.md
@@ -71,6 +72,7 @@ TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
 - Warning: go.work.sum preesistente resta non tracciato.
 - Warning: nessuna pubblicazione GitHub tentata, per istruzione esplicita.
+- Warning: il commit remoto 2a196ef non è disponibile nell'object database locale e il proxy impedisce il fetch; la verifica è stata effettuata sui file Fase 2A attesi e sullo stato remoto comunicato dall'utente.
 
 BUG CONFERMATI ANCORA APERTI:
 - Worker cancellation, error-channel cardinality e goroutine lifecycle (Fase 2B).
@@ -111,8 +113,7 @@ Introdurre context/errgroup senza cambiare semantica FIDX.
 Verificare assenza di goroutine bloccate e false completion.
 
 ULTIME OPERAZIONI GIT:
-- 7730d95 Refine SBAM correctness harness and status report
-- 97c048a Refine SBAM correctness harness
-- 38868a3 Add FIDX in-memory harness, synthetic DiskLayout model, PBS protocol characterization, and repo rules/docs
+- f4fcca2 Snapshot locale con Fase 1 + Fase 2A
+- 2a196ef GitHub PR #1 Fase 1 (SHA remoto comunicato dall'utente; non disponibile localmente)
 - 519b624 Base upstream originale
-- Working tree Fase 2A: soli file pertinenti; go.work.sum non tracciato escluso.
+- Working tree prima del commit finale: solo aggiornamento di questo status; go.work.sum non tracciato escluso.
