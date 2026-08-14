@@ -2,100 +2,97 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-14 - FASE 2A CORE HARDENING PBS/TLS/PHYSICALDRIVE.
-Fail-closed PBS API, TLS certificate pinning, response lifecycle e device routing.
+2026-08-14 - FASE 2B WORKER CANCELLATION / CONCURRENCY.
+Pipeline FIDX con cancellazione strutturata, lifecycle deterministico e propagazione errori producer/worker.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
 
 BRANCH:
-Locale: work
-GitHub PR head previsto: codex/locate-mbelfiore/proxmoxbackupclient_go
+Locale/Codex: work
+GitHub PR head: codex/locate-mbelfiore/proxmoxbackupclient_go
 
 PULL REQUEST:
-PR #1
-URL: https://github.com/mbelfiore/proxmoxbackupclient_go/pull/1
-Draft: sì secondo lo stato comunicato; nessuna operazione remota eseguita in Fase 2A.
+PR #1 - https://github.com/mbelfiore/proxmoxbackupclient_go/pull/1
+Draft: sì, secondo lo stato remoto comunicato dall'utente.
+GitHub head iniziale verificato dall'utente: 77e05cbd6e480c5c7e6bc12d6ea3aac0280bccb2.
+Nessuna pubblicazione remota dichiarata o eseguita da questo workspace.
 
 BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-565e8b6 (snapshot locale contenente Fase 1 e Fase 2A prima del commit finale di riallineamento).
-Lo SHA finale è riportato nell'output Codex dopo il commit.
+60a5463 snapshot locale Fase 1 + 2A prima della Fase 2B.
+Lo SHA finale Fase 2B è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
-2a196ef981fc7ecc0a4ae495a9a02e263d59b2a4, verificato dall'utente: contiene Fase 1 ma non Fase 2A.
-Il workspace conserva le modifiche Fase 2A da applicare sopra questo stato remoto.
+77e05cbd6e480c5c7e6bc12d6ea3aac0280bccb2, comunicato e verificato dall'utente prima della Fase 2B.
 
 FILE MODIFICATI:
 - docs/SBAM-CORE-AUDIT.md
 - docs/SBAM-CORRECTNESS-PLAN.md
 - docs/SBAM-WORK-STATUS.txt
 - machinebackup/main.go
-- machinebackup/physicaldrive_test.go
-- pbscommon/pbsapi.go
-- pbscommon/pbsapi_characterization_test.go
+- machinebackup/windows.go
+- machinebackup/fidx_harness_test.go
 Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
 
 LAVORO ESEGUITO:
-- Introdotto controllo comune fail-closed per risposte PBS non-2xx.
-- Errori PBS includono metodo, path, status code/text e body limitato a 8 KiB.
-- Corretti Create/Assign/Close Fixed Index, chunk upload, blob, manifest e finish.
-- Applicato lo stesso helper alle equivalenti API Dynamic Index dove sicuro e comune.
-- Garantita chiusura dei response body e drain dei body di successo per connection reuse.
-- Corretto fmt.Errorf privo di direttive tramite il nuovo errore HTTP strutturato.
-- Implementato pinning SHA-256 esatto per certificati anche self-signed.
-- Normalizzati fingerprint equivalenti con separatori ':' e casing differente.
-- Preservate CA validation senza fingerprint e modalità insecure esplicita senza fingerprint.
-- Reso PhysicalDrive case-insensitive senza aprire dispositivi reali.
-- Trasformati characterization test HTTP/TLS/PhysicalDrive in regression test.
-- Aggiunto test di workflow: un fallimento server-side critico impedisce manifest e finish.
-- Aggiunti test espliciti di chiusura response body.
-- Non modificata la pipeline concorrente degli 8 worker.
+- Sostituito il fragile errch per-worker con context condiviso, first-error protetto e WaitGroup.
+- Ogni worker produce un solo esito implicito; eliminato il doppio invio errore/nil.
+- Il primo errore critico cancella producer, dispatcher incorporato e lavoro non ancora iniziato.
+- uploadWorker attende sempre producer e tutti gli otto worker prima di ritornare.
+- Assignment e CloseFixedIndex non vengono eseguiti dopo errore, panic producer, cancellazione o overrun.
+- Introdotta blockProducer con emit cancellation-aware e proprietà chiara del channel jobs.
+- Errori di lettura producer vengono restituiti; panic producer sintetici vengono convertiti in errori.
+- File producer e PhysicalDrive reader vengono chiusi su cancellazione per interrompere letture dove supportato dall'OS.
+- Refactor producer Windows conserva raw gaps, VSS, padding, chunk 4 MiB e short final chunk.
+- Copiati i blocchi emessi dal buffer Windows per evitare mutazioni concorrenti dell'array sottostante.
+- Preservati digest/checksum ordinato, assignment fuori ordine, dedup e zero-block optimization.
+- Nessuna modifica a statistiche, VSS policy, mount mapping, P2V, NBD, GUI o telemetry.
 
 TEST PASSATI:
-- cd pbscommon && go test -count=1 . -> PASS
-- cd pbscommon && go vet . -> PASS
-- cd pbscommon && go build . -> PASS
-- cd machinebackup && go test -count=1 . -> PASS
-- cd machinebackup && go vet . -> PASS
-- cd machinebackup && go build . -> PASS
-- cd machinebackup && GOOS=windows GOARCH=amd64 go build . -> PASS
-- cd directorybackup && go test -count=1 . -> PASS (nessun test file)
-- cd directorybackup && go build . -> PASS
-- cd directorybackup && GOOS=windows GOARCH=amd64 go build . -> PASS
-- cd nbd && go build . -> PASS
-- git diff --check -> PASS
+- machinebackup success path byte-for-byte e checksum -> PASS
+- otto worker simultanei con barrier esplicita e lifecycle completo -> PASS
+- upload error su primo/intermedio/ultimo chunk -> PASS
+- cancellation del lavoro queued e nessuna finalizzazione -> PASS
+- producer returned error e producer panic recovery -> PASS
+- writer overrun fail-closed -> PASS
+- FIDX out-of-order senza time.Sleep -> PASS
+- go test -race -count=1 . (machinebackup) -> PASS
+- PhysicalDrive case-insensitive regression Fase 2A -> PASS
+- PBS HTTP/TLS/body lifecycle regression Fase 2A -> PASS
+- comandi finali di test/vet/build elencati nell'output Codex -> PASS
 
 TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
-- Warning: go.work.sum preesistente resta non tracciato.
-- Warning: nessuna pubblicazione GitHub tentata, per istruzione esplicita.
-- Warning: il commit remoto 2a196ef non è disponibile nell'object database locale e il proxy impedisce il fetch; la verifica è stata effettuata sui file Fase 2A attesi e sullo stato remoto comunicato dall'utente.
+- I timeout nei test sono soltanto guardie anti-deadlock; l'ordine è controllato da channel/barrier.
+- Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
+- Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
 
 BUG CONFERMATI ANCORA APERTI:
-- Worker cancellation, error-channel cardinality e goroutine lifecycle (Fase 2B).
-- Producer panic e propagazione errori concorrenti (Fase 2B).
 - newchunk/reusechunk e ChunkUploadStats non completati.
-- VSS consistency multi-volume, writer state, cleanup e padding da testare.
+- VSS consistency multi-volume, writer state e cleanup da completare.
 - Mapping Windows volume/GUID/mount-point incompleto.
-- DiskLayout sintetico non ancora collegato al percorso produttivo.
-- P2V non pronto per produzione; NBD hardening ancora aperto.
+- DiskLayout sintetico non collegato al percorso produttivo.
+- Chiamate manifest/blob/finish ignorano ancora alcuni errori nel main caller.
+- P2V non pronto per produzione.
+- NBD hardening ancora aperto.
 
 BUG RISOLTI:
-- PBS non-2xx false success per il percorso API oggetto della Fase 2A.
-- TLS fingerprint mismatch, incluso Insecure=true con fingerprint configurato.
-- PhysicalDrive casing (issue #75).
-- fmt.Errorf/go vet in pbsapi.go.
-- Response-body leak nelle API PBS corrette e testate in questa fase.
+- Propagazione errore worker senza doppio risultato errore/nil.
+- Cancellazione condivisa al primo errore critico.
+- Lifecycle producer/dispatcher/otto worker atteso prima del ritorno.
+- Blocco dei channel e goroutine orfane nei percorsi sintetici coperti.
+- Producer error propagation e conversione controllata dei panic producer.
+- Nessuna finalizzazione FIDX o falso successo dopo errore pipeline.
 
 IPOTESI / LAVORO ANCORA APERTO:
-- Fase 2B: cancellazione strutturata e lifecycle degli 8 worker.
-- Semantica e popolamento statistiche upstream esistenti.
-- Adapter Windows testabile per layout e mount mapping.
-- Policy VSS application-consistent e verifica post-upload.
+- Statistiche logiche/compresse/trasmesse/riutilizzate.
+- Policy VSS application-consistent e mapping volumi Windows.
+- Wiring DiskLayout validato nel percorso Windows.
 - Readiness P2V e hardening NBD.
+- Verifica post-upload su PBS isolato in fase futura.
 
 OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun PhysicalDrive reale.
@@ -104,16 +101,15 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun merge su master.
 
 STATO FINALE:
-PASS
+PASS nel workspace locale dopo test, vet e build finali; non equivale a pubblicazione GitHub.
 
 PROSSIMO PASSO CONSIGLIATO:
-Avviare FASE 2B worker cancellation/concurrency.
-Scrivere prima test deterministici per errori di ogni worker.
-Introdurre context/errgroup senza cambiare semantica FIDX.
-Verificare assenza di goroutine bloccate e false completion.
+Completare statistiche usando ChunkUploadStats upstream esistente.
+Poi affrontare VSS/mount mapping con adapter Windows testabile.
+Mantenere fail-closed e test deterministici prima di ogni fix.
 
 ULTIME OPERAZIONI GIT:
-- 565e8b6 Snapshot locale con Fase 1 + Fase 2A
-- 2a196ef GitHub PR #1 Fase 1 (SHA remoto comunicato dall'utente; non disponibile localmente)
-- 519b624 Base upstream originale
-- Working tree prima del commit finale: solo aggiornamento di questo status; go.work.sum non tracciato escluso.
+- 60a5463 stato iniziale locale Fase 1 + 2A
+- 77e05cb stato GitHub iniziale comunicato dall'utente
+- 519b624 base upstream originale
+- Working tree Fase 2B: soli file pertinenti; go.work.sum escluso.

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -249,7 +250,6 @@ func GetDiskLength(path string) (int64, error) {
 
 func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 	parts := make([]Partition, 0)
-	ch := make(chan []byte)
 	diskdev := fmt.Sprintf("\\\\.\\PhysicalDrive%d", index)
 	volumeHandle, err := syscall.CreateFile(
 		syscall.StringToUTF16Ptr(diskdev), // Example volume C:
@@ -262,7 +262,7 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 	)
 	if err != nil {
 		dialog.Error(err.Error())
-		panic(err)
+		return 0, err
 	}
 	defer syscall.CloseHandle(volumeHandle)
 	var volumeDiskExtents DRIVE_LAYOUT_INFORMATION_EX
@@ -285,13 +285,13 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 
 	if err != nil {
 		dialog.Error(err.Error())
-		panic(err)
+		return 0, err
 	}
 
 	vols, err := enumVolumeDiskOffset()
 	if err != nil {
 		dialog.Error(err.Error())
-		panic(err)
+		return 0, err
 	}
 	/*var exts VOLUME_DISK_EXTENTS
 	err = syscall.DeviceIoControl(
@@ -401,116 +401,140 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 		fmt.Printf("%+v\n", parts)
 
 		//begin := time.Now()
-		F, err := os.Open(diskdev)
+		physicalDisk, err := os.Open(diskdev)
 		if err != nil {
-			panic(err)
+			return err
+		}
+		defer physicalDisk.Close()
+
+		producer := func(ctx context.Context, emit func([]byte) error) error {
+			stopClose := context.AfterFunc(ctx, func() { _ = physicalDisk.Close() })
+			defer stopClose()
+			buffer := make([]byte, 0)
+			emitBuffered := func(data []byte) error {
+				buffer = append(buffer, data...)
+				for len(buffer) >= pbscommon.PBS_FIXED_CHUNK_SIZE {
+					block := append([]byte(nil), buffer[:pbscommon.PBS_FIXED_CHUNK_SIZE]...)
+					if err := emit(block); err != nil {
+						return err
+					}
+					buffer = buffer[pbscommon.PBS_FIXED_CHUNK_SIZE:]
+				}
+				return nil
+			}
+
+			for idx, partition := range parts {
+				fmt.Printf("Partition: %d\n", idx)
+				if !partition.RequiresVSS {
+					if _, err := physicalDisk.Seek(int64(partition.StartByte), io.SeekStart); err != nil {
+						return err
+					}
+					block := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
+					position := partition.StartByte
+					for position < partition.EndByte {
+						bytesRead, err := physicalDisk.Read(block[:min(uint64(len(block)), partition.EndByte-position)])
+						if bytesRead > 0 {
+							if emitErr := emitBuffered(block[:bytesRead]); emitErr != nil {
+								return emitErr
+							}
+							position += uint64(bytesRead)
+						}
+						if err != nil {
+							return err
+						}
+						if bytesRead == 0 {
+							return fmt.Errorf("failed to read partition at %d", position)
+						}
+					}
+					if position != partition.EndByte {
+						return fmt.Errorf("failed to read partition entirely %d/%d", position, partition.EndByte)
+					}
+					continue
+				}
+
+				snapshot, ok := snapshots[partition.Letter+":\\"]
+				if !ok {
+					return fmt.Errorf("cannot find snapshot for letter %s", partition.Letter)
+				}
+				snapshotPath := strings.TrimRight(snapshot.ObjectPath, "\\")
+				snapshotFile, err := os.Open(snapshotPath)
+				if err != nil {
+					return err
+				}
+				snapshotLength, err := GetDiskLength(snapshotPath)
+				if err != nil {
+					snapshotFile.Close()
+					return err
+				}
+				if snapshotLength < 0 || uint64(snapshotLength) > partition.EndByte-partition.StartByte {
+					snapshotFile.Close()
+					return fmt.Errorf("VSS snapshot length %d exceeds partition length %d", snapshotLength, partition.EndByte-partition.StartByte)
+				}
+				if partition.EndByte != partition.StartByte+uint64(snapshotLength) {
+					log.Printf("Harmless warning: VSS snapshot is smaller than partition ( probably FS is too ), will pad with zeros")
+				}
+
+				position := partition.StartByte
+				block := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
+				for {
+					bytesRead, readErr := snapshotFile.Read(block)
+					if bytesRead > 0 {
+						if position+uint64(bytesRead) > partition.EndByte {
+							snapshotFile.Close()
+							return fmt.Errorf("fatal: went outside partition space while reading VSS snapshot")
+						}
+						if emitErr := emitBuffered(block[:bytesRead]); emitErr != nil {
+							snapshotFile.Close()
+							return emitErr
+						}
+						position += uint64(bytesRead)
+					}
+					if readErr == io.EOF {
+						break
+					}
+					if readErr != nil {
+						snapshotFile.Close()
+						return readErr
+					}
+					if bytesRead == 0 {
+						snapshotFile.Close()
+						return fmt.Errorf("failed to read VSS snapshot at %d", position)
+					}
+				}
+				if err := snapshotFile.Close(); err != nil {
+					return err
+				}
+
+				padding := partition.EndByte - position
+				zeroBlock := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
+				for padding > 0 {
+					log.Printf("Padding %d", padding)
+					piece := zeroBlock[:min(uint64(len(zeroBlock)), padding)]
+					if err := emitBuffered(piece); err != nil {
+						return err
+					}
+					position += uint64(len(piece))
+					padding -= uint64(len(piece))
+				}
+				if position != partition.EndByte {
+					return fmt.Errorf("failed to read partition entirely %d/%d", position, partition.EndByte)
+				}
+			}
+
+			if len(buffer) > 0 {
+				if err := emit(append([]byte(nil), buffer...)); err != nil {
+					return err
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			default:
+				return nil
+			}
 		}
 
-		//Blocks are 4MB as per proxmox docs
-		go func() {
-			buffer := make([]byte, 0)
-			for idx, P := range parts {
-				fmt.Printf("Partition: %d\n", idx)
-				if !P.RequiresVSS {
-					F.Seek(int64(P.StartByte), io.SeekStart)
-					block := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
-					pos := P.StartByte
-					for pos < P.EndByte {
-						nbytes, err := F.Read(block[:min(uint64(len(block)), P.EndByte-pos)])
-						if err != nil {
-							panic(err)
-						}
-						buffer = append(buffer, block[:nbytes]...)
-
-						if len(buffer) >= pbscommon.PBS_FIXED_CHUNK_SIZE {
-							ch <- buffer[:pbscommon.PBS_FIXED_CHUNK_SIZE]
-							buffer = buffer[pbscommon.PBS_FIXED_CHUNK_SIZE:]
-						}
-						pos += uint64(nbytes)
-					}
-					if pos != P.EndByte {
-						panic(fmt.Errorf("Failed to read partition entirely %d/%d", pos, P.EndByte))
-					}
-				} else {
-					snap, ok := snapshots[P.Letter+":\\"]
-					if !ok {
-						panic(fmt.Errorf("Cannot find snapshot for letter %s", P.Letter))
-					}
-					snapshot_file, err := os.Open(strings.TrimRight(snap.ObjectPath, "\\"))
-					if err != nil {
-						panic(err)
-					}
-					defer snapshot_file.Close()
-					pos := P.StartByte
-
-					l, err := GetDiskLength(strings.TrimRight(snap.ObjectPath, "\\"))
-					if err != nil {
-						panic(err)
-					}
-
-					if uint64(P.EndByte) != uint64(P.StartByte)+uint64(l) {
-						log.Printf("Harmless warning: VSS snapshot is smaller than partition ( probably FS is too ), will pad with zeros")
-					}
-
-					npad := P.EndByte - (uint64(P.StartByte) + uint64(l))
-
-					block := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
-					for {
-						nbytes, err := snapshot_file.Read(block)
-						if err == io.EOF {
-							if pos != P.EndByte {
-								log.Printf("Harmless warning: VSS snapshot is smaller than partition ( probably FS is too ), will pad with zeros")
-								npad = P.EndByte - pos
-								break
-							}
-						}
-						if pos >= P.EndByte {
-							panic(fmt.Errorf("Fatal: Went outside partition space while reading VSS snapshot"))
-						}
-						if err != nil {
-							panic(err)
-						}
-						pos += uint64(nbytes)
-						buffer = append(buffer, block[:nbytes]...)
-						if len(buffer) >= pbscommon.PBS_FIXED_CHUNK_SIZE {
-							ch <- buffer[:pbscommon.PBS_FIXED_CHUNK_SIZE]
-							buffer = buffer[pbscommon.PBS_FIXED_CHUNK_SIZE:]
-						}
-					}
-					block = make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
-					for npad > 0 {
-						log.Printf("Padding %d", npad)
-						sl := block[:min(pbscommon.PBS_FIXED_CHUNK_SIZE, npad)]
-						buffer = append(buffer, sl...)
-						pos += uint64(len(sl))
-						if len(buffer) >= pbscommon.PBS_FIXED_CHUNK_SIZE {
-							ch <- buffer[:pbscommon.PBS_FIXED_CHUNK_SIZE]
-							buffer = buffer[pbscommon.PBS_FIXED_CHUNK_SIZE:]
-						}
-						npad -= uint64(len(sl))
-					}
-					if pos != P.EndByte {
-						panic(fmt.Errorf("Failed to read partition entirely %d/%d", pos, P.EndByte))
-					}
-				}
-
-			}
-
-			for len(buffer) > 0 {
-				if len(buffer) > pbscommon.PBS_FIXED_CHUNK_SIZE {
-					ch <- buffer[:pbscommon.PBS_FIXED_CHUNK_SIZE]
-					buffer = buffer[pbscommon.PBS_FIXED_CHUNK_SIZE:]
-				} else {
-					ch <- buffer
-					buffer = buffer[:0]
-				}
-			}
-
-			close(ch)
-		}()
-
-		return uploadWorker(client, fmt.Sprintf("drive-sata%d.img.fidx", index), uint64(total), ch)
-
+		return uploadWorker(client, fmt.Sprintf("drive-sata%d.img.fidx", index), uint64(total), producer)
 	})
 }
 

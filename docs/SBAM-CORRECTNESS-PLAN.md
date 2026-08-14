@@ -14,18 +14,22 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | FIDX duplicates | In-job dedup | Two identical 4 MiB chunks | One upload may satisfy two offsets; exact reconstruction | PASS | Uses recorded digest store |
 | Worker reorder | Concurrent completion ordering | Three chunks released through explicit barriers in reverse order | Non-monotonic assignments, exact reconstruction, and correct ordered checksum | PASS | Deterministic; official PBS writes each digest at the chunk position derived from offset and size |
 | PBS 200 recorder | Call coverage | Create/upload/assign/close/blob/manifest/finish | All calls recorded | PASS | `httptest`, no PBS server |
-| UploadBlob non-2xx | False success | 400/401/403/500 | Non-nil error with method, path, status, and bounded body | PASS | Production bug intentionally unfixed |
+| UploadBlob non-2xx | False success | 400/401/403/500 | Non-nil error with method, path, status, and bounded body | PASS | Regression coverage added in Phase 2A |
 | UploadManifest non-2xx | False success | 400/401/403/500 | Non-nil error with method, path, status, and bounded body | PASS | Delegates to UploadBlob |
-| Finish non-2xx | False job success | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Production bug intentionally unfixed |
-| AssignFixedChunks non-2xx | Missing index entries | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Production bug intentionally unfixed |
-| CloseFixedIndex non-2xx | Invalid/incomplete FIDX | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Manifest mutation also needs later assertion |
+| Finish non-2xx | False job success | 400/401/403/500 | Non-nil error with method, path, status, and bounded body | PASS | Regression coverage added in Phase 2A |
+| AssignFixedChunks non-2xx | Missing index entries | 400/401/403/500 | Non-nil error with method, path, status, and bounded body | PASS | Regression coverage added in Phase 2A |
+| CloseFixedIndex non-2xx | Invalid/incomplete FIDX | 400/401/403/500 | Non-nil error; manifest state not finalized | PASS | Regression coverage added in Phase 2A |
 | Fingerprint mismatch | MITM/certificate trust | Correct, normalized, incorrect, and insecure+pinned fingerprints | Correct pins accepted; mismatches rejected | PASS | Regression coverage added in Phase 2A |
 | PhysicalDrive casing | Issue #75 routing | Four case combinations | All valid casing variants resolve to the same index | PASS | Pure string test; no device open |
 | Layout ordering | Incorrect gap plan | Ordered and shuffled partitions | Normalize to identical ordered coverage | PASS | GPT and MBR |
 | Layout overlap | Ambiguous reads | Overlapping partitions | Reject before acquisition | PASS | Synthetic model |
 | Layout beyond disk | Issue #72/source corruption | End > physical size | Reject as invalid source layout | PASS | Distinct from writer overrun |
 | Layout gaps | Lost boot/GPT metadata | Before/between/after gaps | Full contiguous coverage | PASS | Synthetic model |
-| Writer true overrun | Producer emits > declared size | Extra synthetic block | Writer returns fatal overrun | PLANNED | Current goroutine error path can deadlock; requires safe cancellation seam |
+| Writer true overrun | Producer emits > declared size | Extra synthetic block | Error returned; no assign/close | PASS | Phase 2B cancellation regression |
+| Eight-worker lifecycle | Orphaned workers on success | Eight uploads held at an explicit barrier | All eight start, complete, and reconstruct byte-identically | PASS | No sleep; timeout is deadlock guard only |
+| Upload failure positions | Error/nil double result and false finalization | First, middle, and final source chunks fail | Original error returned; producer/workers end; no assign/close | PASS | Phase 2B deterministic regression |
+| Cancellation of queued work | Producer/dispatcher deadlock and excess PBS calls | 16 blocks; eight in flight; one forced failure | Queued work canceled; only in-flight calls finish; all goroutines joined | PASS | Explicit gates; no timing orchestration |
+| Producer failure | Panic or read error escapes/lost | Returned error and recovered synthetic panic | Useful error returned; no assign/close; workers end | PASS | Production producers now return errors through blockProducer |
 | `newchunk` | Incorrect metrics | New and duplicate chunks | New count increments only uploads | PLANNED | Known current omission; do not fix in Phase 1 |
 | `reusechunk` | Incorrect metrics | Previous/in-job duplicate | Reuse count semantics documented | PLANNED | Distinguish prior vs same-job reuse if required |
 | `ChunkUploadStats` | Misleading manifest | Mixed compressed/reused data | Existing fields populated with verified semantics | PLANNED | No replacement stats structure |

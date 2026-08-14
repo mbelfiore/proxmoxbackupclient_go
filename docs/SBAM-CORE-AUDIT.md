@@ -23,7 +23,7 @@ Active core paths are Windows layout discovery, `GetDiskLength`, VSS acquisition
 ## Confirmed or likely defects
 
 1. Worker completion order controls `assignments` and `assignments_offset`, while the checksum is explicitly calculated in offset order. This is valid PBS fixed-index behavior: `fixed_append` in the official `src/api2/backup/mod.rs` pairs every digest with its offset, and `fixed_writer_append_chunk` in `src/api2/backup/environment.rs` derives the chunk index from offset and size before writing the digest directly at that position. Assignment arrival order therefore need not be monotonic. The deterministic harness retains this case to verify concurrency, byte reconstruction, and checksum correctness.
-2. Error-channel cardinality and cancellation are unsafe: one worker can send an error and a later nil, other goroutines can remain blocked, and producer panics are not propagated as errors.
+2. Phase 2B replaces the per-worker result channel with shared context cancellation, one retained first error, an owned producer channel, and a worker wait group. Upload errors, producer errors/panics, cancellation, and size overruns now stop finalization and are covered by deterministic lifecycle tests; the function waits for producer and all eight workers before returning.
 3. `newchunk` is never incremented in the machine writer; `reusechunk` is local and not returned; `ChunkUploadStats` remains zero.
 4. Phase 2A now makes the machine-backup PBS API path fail closed on non-2xx responses and closes response bodies on both success and error paths; regression tests cover 400/401/403/500 and workflow termination.
 5. Phase 2A now enforces a configured SHA-256 certificate fingerprint even with self-signed or explicitly insecure connections; without a fingerprint, normal CA validation or explicit insecure mode remains unchanged.
@@ -34,7 +34,7 @@ Active core paths are Windows layout discovery, `GetDiskLength`, VSS acquisition
 
 ## Integrity and P2V risk
 
-The highest integrity risk is false success after PBS rejected an assignment, close, blob, manifest, or finish operation. The highest Windows acquisition risk is failure to associate a mounted volume with its partition, causing a live raw read. Multi-volume snapshots are created independently and no VSS writer state is evaluated, so application consistency is not established. Unsupported multi-extent/dynamic layouts need fail-closed handling.
+Phase 2A makes the PBS API fail closed and Phase 2B prevents FIDX finalization after pipeline failure. Remaining caller-level risks include unchecked return values outside the hardened writer path, such as some manifest/blob/finish calls in `machinebackup` main flow. The highest Windows acquisition risk is failure to associate a mounted volume with its partition, causing a live raw read. Multi-volume snapshots are created independently and no VSS writer state is evaluated, so application consistency is not established. Unsupported multi-extent/dynamic layouts need fail-closed handling.
 
 A byte-correct disk image does not imply a bootable P2V result. BIOS/UEFI, EFI disk, Secure Boot, TPM, BitLocker, storage drivers, NIC identity, boot order, source Windows version, and stable machine identity are not modeled.
 
@@ -47,7 +47,7 @@ Do not replace FIDX with DIDX; remove raw gaps; remove VSS padding; force every 
 1. Establish the in-memory correctness harness and protocol recorder.
 2. Preserve offset-addressed fixed-index assignments; the official PBS implementation does not require monotonic arrival order.
 3. Make every protocol response explicit and fail closed.
-4. Introduce structured cancellation while retaining parallel hash/compression/upload.
+4. Preserve the Phase 2B structured cancellation and deterministic worker lifecycle while retaining parallel hash/compression/upload.
 5. Replace ad-hoc Windows discovery with a validated immutable disk plan. The current `DiskLayout` is only a synthetic, testable model for that future phase and is not connected to real Windows disk acquisition.
 6. Add multi-volume VSS set/writer-state policy and guaranteed cleanup.
 7. Populate existing upstream statistics with distinct logical, compressed, transmitted, and reused measures.

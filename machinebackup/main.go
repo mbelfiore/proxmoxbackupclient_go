@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -96,15 +97,20 @@ func BytesToString(b int64) string {
 
 }
 
-func uploadWorker(client fixedIndexClient, filename string, total_size uint64, ch chan []byte) error {
-	return uploadWorkerWithProcessedHook(client, filename, total_size, ch, nil)
+type blockProducer func(context.Context, func([]byte) error) error
+
+func uploadWorker(client fixedIndexClient, filename string, totalSize uint64, producer blockProducer) error {
+	return uploadWorkerWithProcessedHook(context.Background(), client, filename, totalSize, producer, nil)
 }
 
 // uploadWorkerWithProcessedHook exposes a completion notification solely for
 // deterministic correctness tests. Production callers use uploadWorker above.
-func uploadWorkerWithProcessedHook(client fixedIndexClient, filename string, total_size uint64, ch chan []byte, processed func(uint64)) error {
-	var newchunk *atomic.Uint64 = new(atomic.Uint64)
-	var reusechunk *atomic.Uint64 = new(atomic.Uint64)
+func uploadWorkerWithProcessedHook(parent context.Context, client fixedIndexClient, filename string, totalSize uint64, producer blockProducer, processed func(uint64)) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	newchunk := new(atomic.Uint64)
+	reusechunk := new(atomic.Uint64)
 	knownChunks := haxmap.New[string, bool]()
 
 	knownChunks2, err := client.GetKnownSha265FromFIDX(filename)
@@ -118,123 +124,161 @@ func uploadWorkerWithProcessedHook(client fixedIndexClient, filename string, tot
 	CS.Init(newchunk, reusechunk, knownChunks)
 	wrid, err := client.CreateFixedIndex(pbscommon.FixedIndexCreateReq{
 		ArchiveName: filename,
-		Size:        int64(total_size),
+		Size:        int64(totalSize),
 	})
 	if err != nil {
 		return err
 	}
 
-	var assignment_mutex sync.Mutex
-
-	errch := make(chan error)
-	digests := make(map[int64][]byte)
-
-	type PosSeg struct {
-		Pos  uint64
-		Data []byte
+	type posSeg struct {
+		pos  uint64
+		data []byte
 	}
 
-	ch2 := make(chan PosSeg)
+	jobs := make(chan posSeg)
+	producerDone := make(chan error, 1)
+	var workers sync.WaitGroup
+	var stateMu sync.Mutex
+	var errorMu sync.Mutex
+	var firstError error
 
-	workerfn := func() {
-		zeroBlock := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
-		zeroSha256 := sha256.Sum256(zeroBlock)
-		for seg := range ch2 {
-			segment_digest := zeroSha256[:]
-			if !bytes.Equal(seg.Data, zeroBlock) { //Comparing the 4MB block to zero is around 30x times faster than sha256, so for this to be slightly slower one would have to have 95% or more disk full, really edge case
-				dig := sha256.Sum256(seg.Data)
-				segment_digest = dig[:]
+	fail := func(err error) {
+		if err == nil {
+			return
+		}
+		errorMu.Lock()
+		if firstError == nil {
+			firstError = err
+			cancel()
+		}
+		errorMu.Unlock()
+	}
+	getError := func() error {
+		errorMu.Lock()
+		defer errorMu.Unlock()
+		return firstError
+	}
+
+	go func() {
+		var producerErr error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				producerErr = fmt.Errorf("block producer panic: %v", recovered)
 			}
+			fail(producerErr)
+			close(jobs)
+			producerDone <- producerErr
+		}()
 
-			shahash := hex.EncodeToString(segment_digest[:])
-			//binary.Write(CS.chunkdigests, binary.LittleEndian, (CS.pos + uint64(nread)))
+		var position uint64
+		producerErr = producer(ctx, func(block []byte) error {
+			segment := posSeg{pos: position, data: block}
+			select {
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			case jobs <- segment:
+				position += uint64(len(block))
+				return nil
+			}
+		})
+	}()
 
-			assignment_mutex.Lock()
-			CS.index_hash_data[seg.Pos] = segment_digest[:]
-			digests[int64(seg.Pos)] = segment_digest[:]
-
-			_, exists := knownChunks.GetOrSet(shahash, true)
-			assignment_mutex.Unlock()
-
-			if exists {
-				reusechunk.Add(1)
-			} else {
-				err = client.UploadFixedCompressedChunk(wrid, shahash, seg.Data)
-				if err != nil {
-					errch <- err
-					break
+	worker := func() {
+		defer workers.Done()
+		zeroBlock := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
+		zeroSHA256 := sha256.Sum256(zeroBlock)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case segment, ok := <-jobs:
+				if !ok {
+					return
+				}
+				if ctx.Err() != nil {
+					return
 				}
 
+				segmentDigest := zeroSHA256[:]
+				if !bytes.Equal(segment.data, zeroBlock) {
+					digest := sha256.Sum256(segment.data)
+					segmentDigest = digest[:]
+				}
+				shaHash := hex.EncodeToString(segmentDigest)
+
+				stateMu.Lock()
+				_, exists := knownChunks.GetOrSet(shaHash, true)
+				stateMu.Unlock()
+
+				if exists {
+					reusechunk.Add(1)
+				} else {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+					if err := client.UploadFixedCompressedChunk(wrid, shaHash, segment.data); err != nil {
+						fail(err)
+						return
+					}
+				}
+				if ctx.Err() != nil {
+					return
+				}
+
+				stateMu.Lock()
+				CS.index_hash_data[segment.pos] = segmentDigest
+				CS.assignments = append(CS.assignments, shaHash)
+				CS.assignments_offset = append(CS.assignments_offset, segment.pos)
+				CS.processed_size += uint64(len(segment.data))
+				CS.chunkcount++
+				if CS.processed_size > totalSize {
+					stateMu.Unlock()
+					fail(fmt.Errorf("fatal: tried to backup more data than specified size"))
+					return
+				}
+				fmt.Printf("Chunk %d/%d/%d\n", CS.chunkcount, int(math.Ceil(float64(totalSize)/float64(pbscommon.PBS_FIXED_CHUNK_SIZE))), reusechunk.Load())
+				stateMu.Unlock()
+				if processed != nil {
+					processed(segment.pos)
+				}
 			}
-			assignment_mutex.Lock()
-			CS.assignments = append(CS.assignments, shahash)
-			CS.assignments_offset = append(CS.assignments_offset, seg.Pos)
-			CS.processed_size += uint64(len(seg.Data))
-			CS.chunkcount++
-			if CS.processed_size > total_size {
-				errch <- fmt.Errorf("Fatal: tried to backup more data than specified size!")
-				assignment_mutex.Unlock()
-				break
-			}
-			fmt.Printf("Chunk %d/%d/%d\n", CS.chunkcount, int(math.Ceil(float64(total_size)/float64(pbscommon.PBS_FIXED_CHUNK_SIZE))), reusechunk.Load())
-			assignment_mutex.Unlock()
-			if processed != nil {
-				processed(seg.Pos)
-			}
-
-		}
-		errch <- nil
-	}
-
-	posfn := func() {
-		pos := uint64(0)
-		for block := range ch {
-
-			ch2 <- PosSeg{
-				Pos:  pos,
-				Data: block,
-			}
-			pos += uint64(len(block))
-		}
-		close(ch2)
-	}
-
-	go posfn()
-
-	for i := 0; i < 8; i++ {
-		go workerfn()
-	}
-	for i := 0; i < 8; i++ {
-		err := <-errch
-		if err != nil {
-			return err
 		}
 	}
 
-	//Avoid incurring in request entity too large by chunking assignment PUT requests in blocks of at most 128 chunks
-	for k := 0; k < len(CS.assignments); k += 128 {
-		k2 := k + 128
-		if k2 > len(CS.assignments) {
-			k2 = len(CS.assignments)
-		}
-		err = client.AssignFixedChunks(wrid, CS.assignments[k:k2], CS.assignments_offset[k:k2])
-		if err != nil {
-			return err
-		}
+	workers.Add(8)
+	for range 8 {
+		go worker()
 	}
-
-	chunkdigests := sha256.New()
-	positions := slices.Collect(maps.Keys(CS.index_hash_data))
-	slices.Sort(positions)
-	for _, P := range positions {
-		chunkdigests.Write(CS.index_hash_data[P])
-	}
-
-	err = client.CloseFixedIndex(wrid, hex.EncodeToString(chunkdigests.Sum(nil)), CS.processed_size, CS.chunkcount)
-	if err != nil {
+	workers.Wait()
+	producerErr := <-producerDone
+	if err := getError(); err != nil {
 		return err
 	}
-	return nil
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	if producerErr != nil {
+		return producerErr
+	}
+
+	// Avoid request-entity-too-large responses by assigning at most 128 chunks.
+	for offset := 0; offset < len(CS.assignments); offset += 128 {
+		end := min(offset+128, len(CS.assignments))
+		if err := client.AssignFixedChunks(wrid, CS.assignments[offset:end], CS.assignments_offset[offset:end]); err != nil {
+			return err
+		}
+	}
+
+	chunkDigests := sha256.New()
+	positions := slices.Collect(maps.Keys(CS.index_hash_data))
+	slices.Sort(positions)
+	for _, position := range positions {
+		_, _ = chunkDigests.Write(CS.index_hash_data[position])
+	}
+
+	return client.CloseFixedIndex(wrid, hex.EncodeToString(chunkDigests.Sum(nil)), CS.processed_size, CS.chunkcount)
 }
 
 func Slugify(input string) string {
@@ -267,35 +311,44 @@ func physicalDriveIndex(path string) (int, bool) {
 
 func backupFileDevice(client *pbscommon.PBSClient, filename string) error {
 	slug := Slugify(filename)
-
-	f, err := os.Open(filename)
-
+	file, err := os.Open(filename)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 
-	size, err := f.Seek(0, io.SeekEnd)
+	size, err := file.Seek(0, io.SeekEnd)
 	if err != nil {
 		return err
 	}
-	ch := make(chan []byte)
-	go func() {
-		f.Seek(0, io.SeekStart)
-		for {
-			block := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE) //PBS block size is fixed 4MB
-			nread, err := f.Read(block)
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				panic(err)
-			}
-
-			ch <- block[:nread]
+	producer := func(ctx context.Context, emit func([]byte) error) error {
+		stopClose := context.AfterFunc(ctx, func() { _ = file.Close() })
+		defer stopClose()
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return err
 		}
-		close(ch)
-	}()
-
-	return uploadWorker(client, slug+".fidx", uint64(size), ch)
+		for {
+			block := make([]byte, pbscommon.PBS_FIXED_CHUNK_SIZE)
+			bytesRead, err := file.Read(block)
+			if bytesRead > 0 {
+				if emitErr := emit(block[:bytesRead]); emitErr != nil {
+					return emitErr
+				}
+			}
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			default:
+			}
+		}
+	}
+	return uploadWorker(client, slug+".fidx", uint64(size), producer)
 }
 
 type BackupDisk struct {
