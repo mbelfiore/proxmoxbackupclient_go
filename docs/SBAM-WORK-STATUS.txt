@@ -21,7 +21,7 @@ BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-f4fcca2 (snapshot locale contenente Fase 1 e Fase 2A prima del commit finale di riallineamento).
+565e8b6 (snapshot locale contenente Fase 1 e Fase 2A prima del commit finale di riallineamento).
 Lo SHA finale è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
@@ -113,7 +113,7 @@ Introdurre context/errgroup senza cambiare semantica FIDX.
 Verificare assenza di goroutine bloccate e false completion.
 
 ULTIME OPERAZIONI GIT:
-- f4fcca2 Snapshot locale con Fase 1 + Fase 2A
+- 565e8b6 Snapshot locale con Fase 1 + Fase 2A
 - 2a196ef GitHub PR #1 Fase 1 (SHA remoto comunicato dall'utente; non disponibile localmente)
 - 519b624 Base upstream originale
 - Working tree prima del commit finale: solo aggiornamento di questo status; go.work.sum non tracciato escluso.
