@@ -2,8 +2,8 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-14 - FASE 2B WORKER CANCELLATION / CONCURRENCY.
-Pipeline FIDX con cancellazione strutturata, lifecycle deterministico e propagazione errori producer/worker.
+2026-08-14 - FASE 2B REVIEW GATE / FOTOGRAFIA DEL QUADRO.
+Revisione della pipeline FIDX, degli invarianti Windows/VSS e dei limiti reali della cancellazione di rete.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
@@ -22,8 +22,8 @@ BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-60a5463 snapshot locale Fase 1 + 2A prima della Fase 2B.
-Lo SHA finale Fase 2B è riportato nell'output Codex dopo il commit.
+55ca06573e3af54aa9469641d34f535114d17e78 implementazione locale Fase 2B revisionata.
+Lo SHA del review-gate documentale è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
 77e05cbd6e480c5c7e6bc12d6ea3aac0280bccb2, comunicato e verificato dall'utente prima della Fase 2B.
@@ -41,7 +41,7 @@ LAVORO ESEGUITO:
 - Sostituito il fragile errch per-worker con context condiviso, first-error protetto e WaitGroup.
 - Ogni worker produce un solo esito implicito; eliminato il doppio invio errore/nil.
 - Il primo errore critico cancella producer, dispatcher incorporato e lavoro non ancora iniziato.
-- uploadWorker attende sempre producer e tutti gli otto worker prima di ritornare.
+- uploadWorker attende producer e tutti gli otto worker prima di ritornare; ciò garantisce assenza di goroutine superstiti dopo il return, ma può ritardare il return se una I/O sottostante non è cancellabile.
 - Assignment e CloseFixedIndex non vengono eseguiti dopo errore, panic producer, cancellazione o overrun.
 - Introdotta blockProducer con emit cancellation-aware e proprietà chiara del channel jobs.
 - Errori di lettura producer vengono restituiti; panic producer sintetici vengono convertiti in errori.
@@ -68,9 +68,14 @@ TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
 - I timeout nei test sono soltanto guardie anti-deadlock; l'ordine è controllato da channel/barrier.
 - Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
+- La cancellazione Fase 2B non viene propagata alle richieste PBS: fixedIndexClient non accetta context e le richieste usano http.NewRequest senza WithContext/NewRequestWithContext.
+- Il client HTTP/2 configurato da Connect non imposta un Timeout globale e il DialTLSContext usa tls.Dial senza il context ricevuto. Un PBS lento o non rispondente può quindi trattenere un worker già dentro Do e, poiché il lifecycle lo attende, ritardare indefinitamente il ritorno della pipeline. È richiesto hardening di rete con test dedicati in una fase separata.
+- Il reader PhysicalDrive viene chiuso su cancellation, ma il file di snapshot VSS attualmente aperto non ha un close hook collegato al context; una Read VSS non interrompibile può analogamente ritardare il producer. La futura fase Windows/VSS deve coprire questo lifecycle senza cambiare la policy VSS incidentalmente.
 - Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
 
 BUG CONFERMATI ANCORA APERTI:
+- Propagazione context/deadline nelle richieste PBS e nel dial HTTP/2.
+- Cancellazione della lettura del file snapshot VSS attivo.
 - newchunk/reusechunk e ChunkUploadStats non completati.
 - VSS consistency multi-volume, writer state e cleanup da completare.
 - Mapping Windows volume/GUID/mount-point incompleto.
@@ -101,14 +106,15 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun merge su master.
 
 STATO FINALE:
-PASS nel workspace locale dopo test, vet e build finali; non equivale a pubblicazione GitHub.
+PASS CON WARNING nel workspace locale: ownership/channel/error propagation sono verificati, ma una richiesta PBS o Read VSS già bloccata non osserva ancora la cancellation. Non equivale a pubblicazione GitHub.
 
 PROSSIMO PASSO CONSIGLIATO:
-Completare statistiche usando ChunkUploadStats upstream esistente.
-Poi affrontare VSS/mount mapping con adapter Windows testabile.
-Mantenere fail-closed e test deterministici prima di ogni fix.
+Prima aggiungere context/deadline testabili alle operazioni PBS senza cambiare la semantica FIDX.
+Poi coprire la cancellazione del reader VSS e il lifecycle degli handle Windows.
+Successivamente completare statistiche usando ChunkUploadStats upstream esistente.
 
 ULTIME OPERAZIONI GIT:
+- 55ca065 implementazione locale Fase 2B revisionata
 - 60a5463 stato iniziale locale Fase 1 + 2A
 - 77e05cb stato GitHub iniziale comunicato dall'utente
 - 519b624 base upstream originale
