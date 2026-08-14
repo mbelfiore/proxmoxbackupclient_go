@@ -1,0 +1,112 @@
+SBAM PBS AGENT - WORK STATUS
+============================
+
+DATA/FASE:
+2026-08-14 - FASE 1, correctness harness FIDX/PBS, modello DiskLayout sintetico e report di validazione.
+
+REPOSITORY:
+mbelfiore/proxmoxbackupclient_go
+
+BRANCH:
+Locale: work
+GitHub PR head previsto: codex/locate-mbelfiore/proxmoxbackupclient_go
+
+PULL REQUEST:
+PR #1
+URL: https://github.com/mbelfiore/proxmoxbackupclient_go/pull/1
+Draft: NON VERIFICABILE finché l'accesso GitHub resta bloccato.
+
+BASE COMMIT:
+519b62425a7da0ec137e7c86e17993c9bd409d59 (base locale upstream/master della FASE 1)
+
+ULTIMO COMMIT:
+97c048a37a530167c0ce98d83dc42bb716bca655 prima dell'aggiunta di questo status report; il commit che include questo file è riportato nel messaggio finale e nelle ultime operazioni Git.
+
+ULTIMO COMMIT GITHUB:
+NON VERIFICATO / NON PUBBLICATO al momento della creazione del report: accesso GitHub bloccato dal proxy e nessuna credenziale GitHub disponibile.
+
+FILE MODIFICATI:
+- AGENTS.md
+- docs/SBAM-CORE-AUDIT.md
+- docs/SBAM-CORRECTNESS-PLAN.md
+- docs/SBAM-WORK-STATUS.txt
+- machinebackup/disk_layout.go
+- machinebackup/disk_layout_test.go
+- machinebackup/fidx_harness_test.go
+- machinebackup/main.go
+- machinebackup/physicaldrive_test.go
+- pbscommon/pbsapi_characterization_test.go
+Nota: go.work.sum resta preesistente e non tracciato; non è incluso nei commit.
+
+LAVORO ESEGUITO:
+- Creato harness FIDX interamente in memoria con ricostruzione byte-per-byte.
+- Coperti input vuoto, corto, 4 MiB, 4 MiB+1, multi-chunk, zero, duplicati e ultimo chunk corto.
+- Reso deterministico il test concorrente out-of-order tramite channel/barrier, senza time.Sleep.
+- Verificati avvio concorrente, completamento inverso, offset non monotoni, ricostruzione e checksum.
+- Documentata la semantica PBS ufficiale: offset+size determinano la posizione FIDX; ordine monotono non richiesto.
+- Lasciata invariata la pipeline produttiva: nessun riordinamento artificiale delle assignment.
+- Creato DiskLayout esclusivamente sintetico/testabile, non collegato all'acquisizione Windows.
+- Aggiunti PBS mock e characterization test per status HTTP e fingerprint TLS.
+- Documentata la distinzione issue #72 tra layout sorgente invalido e vero writer overrun.
+- Caratterizzato il routing PhysicalDrive case-sensitive collegato all'issue #75.
+
+TEST PASSATI:
+- cd machinebackup && go test -count=1 . -> PASS
+- cd machinebackup && go vet . -> PASS
+- cd machinebackup && go build -o /tmp/sbam-machine-linux . -> PASS
+- cd machinebackup && GOOS=windows GOARCH=amd64 go build -o /tmp/sbam-machine-windows-amd64.exe . -> PASS
+- cd pbscommon && go test -vet=off -count=1 . -> PASS
+- cd directorybackup && go build -o /tmp/sbam-directory-linux . -> PASS
+- cd directorybackup && GOOS=windows GOARCH=amd64 go build -o /tmp/sbam-directory-windows-amd64.exe . -> PASS
+- cd nbd && go build -o /tmp/sbam-nbd-linux . -> PASS
+- git diff --check -> PASS
+
+TEST FALLITI / WARNING:
+- cd pbscommon && go test -count=1 . -> FAIL per debito preesistente rilevato dal vet automatico:
+  pbsapi.go:176:49: fmt.Errorf call has arguments but no formatting directives.
+- Pubblicazione GitHub -> BLOCKED: HTTPS CONNECT tunnel 403; SSH DNS non disponibile; gh non autenticato.
+- Verifica remota PR #1/Draft/base/head/file/descrizione -> BLOCKED per lo stesso limite infrastrutturale.
+
+BUG CONFERMATI ANCORA APERTI:
+- Alcune chiamate PBS possono restituire nil su HTTP 400/401/403/500.
+- Fingerprint TLS non corrispondente attualmente accettato nel percorso caratterizzato.
+- Riconoscimento PhysicalDrive case-sensitive (issue #75).
+- newchunk non incrementato nel machine writer; reusechunk non propagato; ChunkUploadStats non popolato.
+- Gestione error channel/cancellazione worker potenzialmente bloccante.
+- Mapping volume/mount-point, VSS multi-volume/writer state/cleanup ancora incompleti.
+- fmt.Errorf senza formatting directives in pbsapi.go:176.
+
+BUG RISOLTI:
+- Eliminata la dipendenza da wall clock/time.Sleep nel test FIDX out-of-order.
+- Eliminata dalla documentazione l'ipotesi errata che PBS richieda assignment FIDX monotone.
+- Nessun bug del motore produttivo corretto in questa fase, per scelta esplicita.
+
+IPOTESI / LAVORO ANCORA APERTO:
+- Test del vero writer overrun dopo introduzione di cancellazione sicura.
+- Adapter Windows sintetico per mapping volume, GUID e mount-point.
+- Test VSS multi-volume, writer state, cleanup e padding.
+- Semantica e popolamento delle statistiche upstream esistenti.
+- Hardening HTTP/TLS e verifica post-upload in una fase successiva.
+
+OPERAZIONI VIETATE NON ESEGUITE:
+- Nessun PhysicalDrive reale.
+- Nessun backup reale.
+- Nessun restore reale.
+- Nessun merge su master.
+
+STATO FINALE:
+BLOCKED
+Motivo: codice e validazione locali completi; pubblicazione/verifica GitHub impedita dall'infrastruttura di rete/autenticazione disponibile.
+
+PROSSIMO PASSO CONSIGLIATO:
+Fornire al workspace un canale GitHub autenticato e consentito dal proxy.
+Pubblicare HEAD su codex/locate-mbelfiore/proxmoxbackupclient_go.
+Aggiornare la descrizione Testing della sola PR #1.
+Verificare Draft, base master, head corretto e presenza di questo file.
+Non eseguire merge.
+
+ULTIME OPERAZIONI GIT:
+- 97c048a Refine SBAM correctness harness
+- 38868a3 Add FIDX in-memory harness, synthetic DiskLayout model, PBS protocol characterization, and repo rules/docs
+- 519b624 Base locale della FASE 1
+- Working tree prima del commit status: solo docs/SBAM-WORK-STATUS.txt nuovo; go.work.sum preesistente non tracciato.
