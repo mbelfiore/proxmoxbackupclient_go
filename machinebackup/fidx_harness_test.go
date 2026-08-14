@@ -8,7 +8,6 @@ import (
 	"sort"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/alphadose/haxmap"
 	"pbscommon"
@@ -26,7 +25,7 @@ type fixedIndexMock struct {
 	created                 pbscommon.FixedIndexCreateReq
 	closedChecksum          string
 	closedSize, closedCount uint64
-	delay                   func([]byte) time.Duration
+	beforeUpload            func([]byte)
 }
 
 func newFixedIndexMock() *fixedIndexMock {
@@ -40,8 +39,8 @@ func (m *fixedIndexMock) CreateFixedIndex(r pbscommon.FixedIndexCreateReq) (uint
 	return 7, nil
 }
 func (m *fixedIndexMock) UploadFixedCompressedChunk(_ uint64, d string, b []byte) error {
-	if m.delay != nil {
-		time.Sleep(m.delay(b))
+	if m.beforeUpload != nil {
+		m.beforeUpload(b)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -151,8 +150,39 @@ func TestFIDXOutOfOrderCompletionCharacterizesOffsetSemantics(t *testing.T) {
 	data := append(bytes.Repeat([]byte{1}, pbscommon.PBS_FIXED_CHUNK_SIZE), bytes.Repeat([]byte{2}, pbscommon.PBS_FIXED_CHUNK_SIZE)...)
 	data = append(data, bytes.Repeat([]byte{3}, pbscommon.PBS_FIXED_CHUNK_SIZE)...)
 	m := newFixedIndexMock()
-	m.delay = func(b []byte) time.Duration { return time.Duration(4-int(b[0])) * 20 * time.Millisecond }
-	if err := uploadWorker(m, "disk.fidx", uint64(len(data)), feedBlocks(data)); err != nil {
+	started := make(chan byte, 3)
+	release := map[byte]chan struct{}{1: make(chan struct{}), 2: make(chan struct{}), 3: make(chan struct{})}
+	processed := make(chan uint64, 3)
+	m.beforeUpload = func(b []byte) {
+		started <- b[0]
+		<-release[b[0]]
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- uploadWorkerWithProcessedHook(m, "disk.fidx", uint64(len(data)), feedBlocks(data), func(offset uint64) {
+			processed <- offset
+		})
+	}()
+
+	seen := map[byte]bool{}
+	for range 3 {
+		seen[<-started] = true
+	}
+	if !seen[1] || !seen[2] || !seen[3] {
+		t.Fatalf("expected three concurrently started uploads, got %v", seen)
+	}
+
+	wantCompletion := []struct {
+		block  byte
+		offset uint64
+	}{{3, 2 * pbscommon.PBS_FIXED_CHUNK_SIZE}, {2, pbscommon.PBS_FIXED_CHUNK_SIZE}, {1, 0}}
+	for _, want := range wantCompletion {
+		close(release[want.block])
+		if got := <-processed; got != want.offset {
+			t.Fatalf("processed offset=%d, want %d", got, want.offset)
+		}
+	}
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	monotonic := true
@@ -168,5 +198,18 @@ func TestFIDXOutOfOrderCompletionCharacterizesOffsetSemantics(t *testing.T) {
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("offset-addressed reconstruction failed: %v", err)
 	}
-	t.Log("assignments are non-monotonic, while offset-addressed reconstruction and ordered checksum remain valid; PBS acceptance still requires authoritative protocol confirmation")
+	ordered := append([]recordedAssignment(nil), m.assignments...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].offset < ordered[j].offset })
+	h := sha256.New()
+	for _, assignment := range ordered {
+		digest, err := hex.DecodeString(assignment.digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = h.Write(digest)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != m.closedChecksum {
+		t.Fatalf("ordered index checksum=%s, want %s", got, m.closedChecksum)
+	}
+	t.Log("assignments are intentionally non-monotonic; PBS fixed indexes use each offset to write the digest directly at its calculated chunk position")
 }

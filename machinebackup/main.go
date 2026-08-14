@@ -97,6 +97,12 @@ func BytesToString(b int64) string {
 }
 
 func uploadWorker(client fixedIndexClient, filename string, total_size uint64, ch chan []byte) error {
+	return uploadWorkerWithProcessedHook(client, filename, total_size, ch, nil)
+}
+
+// uploadWorkerWithProcessedHook exposes a completion notification solely for
+// deterministic correctness tests. Production callers use uploadWorker above.
+func uploadWorkerWithProcessedHook(client fixedIndexClient, filename string, total_size uint64, ch chan []byte, processed func(uint64)) error {
 	var newchunk *atomic.Uint64 = new(atomic.Uint64)
 	var reusechunk *atomic.Uint64 = new(atomic.Uint64)
 	knownChunks := haxmap.New[string, bool]()
@@ -172,6 +178,9 @@ func uploadWorker(client fixedIndexClient, filename string, total_size uint64, c
 			}
 			fmt.Printf("Chunk %d/%d/%d\n", CS.chunkcount, int(math.Ceil(float64(total_size)/float64(pbscommon.PBS_FIXED_CHUNK_SIZE))), reusechunk.Load())
 			assignment_mutex.Unlock()
+			if processed != nil {
+				processed(seg.Pos)
+			}
 
 		}
 		errch <- nil

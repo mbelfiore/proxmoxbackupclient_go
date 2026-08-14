@@ -22,7 +22,7 @@ Active core paths are Windows layout discovery, `GetDiskLength`, VSS acquisition
 
 ## Confirmed or likely defects
 
-1. Worker completion order controls `assignments` and `assignments_offset`; the checksum alone is explicitly reordered. The harness proves offset-addressed reconstruction remains correct, but authoritative PBS acceptance of non-monotonic assignment calls remains to be confirmed.
+1. Worker completion order controls `assignments` and `assignments_offset`, while the checksum is explicitly calculated in offset order. This is valid PBS fixed-index behavior: the official `fixed_append` pairs every digest with its offset, and `fixed_writer_append_chunk` derives the chunk index from offset and size before writing the digest directly at that position. Assignment arrival order therefore need not be monotonic. The deterministic harness retains this case to verify concurrency, byte reconstruction, and checksum correctness.
 2. Error-channel cardinality and cancellation are unsafe: one worker can send an error and a later nil, other goroutines can remain blocked, and producer panics are not propagated as errors.
 3. `newchunk` is never incremented in the machine writer; `reusechunk` is local and not returned; `ChunkUploadStats` remains zero.
 4. `UploadBlob`, `UploadManifest`, `AssignFixedChunks`, `CloseFixedIndex`, and `Finish` can report nil after non-2xx responses. Characterization tests preserve and demonstrate this current behavior without fixing it.
@@ -45,10 +45,10 @@ Do not replace FIDX with DIDX; remove raw gaps; remove VSS padding; force every 
 ## Recommended sequence
 
 1. Establish the in-memory correctness harness and protocol recorder.
-2. Confirm PBS fixed-index assignment semantics from the official implementation and, where permitted, an isolated PBS test instance.
+2. Preserve offset-addressed fixed-index assignments; the official PBS implementation does not require monotonic arrival order.
 3. Make every protocol response explicit and fail closed.
-4. Introduce structured cancellation and deterministic ordered commit while retaining parallel hash/compression/upload.
-5. Replace ad-hoc Windows discovery with a validated immutable disk plan.
+4. Introduce structured cancellation while retaining parallel hash/compression/upload.
+5. Replace ad-hoc Windows discovery with a validated immutable disk plan. The current `DiskLayout` is only a synthetic, testable model for that future phase and is not connected to real Windows disk acquisition.
 6. Add multi-volume VSS set/writer-state policy and guaranteed cleanup.
 7. Populate existing upstream statistics with distinct logical, compressed, transmitted, and reused measures.
 8. Separate canonical host imaging from optional P2V profile generation.

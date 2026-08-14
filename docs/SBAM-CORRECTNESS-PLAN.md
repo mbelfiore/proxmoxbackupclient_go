@@ -12,7 +12,7 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | FIDX multiple | Index/checksum/order | 3×4 MiB + 99 | Exact reconstruction and ordered checksum | PASS | In-memory only |
 | FIDX zeros | Zero fast-path integrity | 8 MiB zeros | Exact reconstruction | PASS | Does not benchmark optimization |
 | FIDX duplicates | In-job dedup | Two identical 4 MiB chunks | One upload may satisfy two offsets; exact reconstruction | PASS | Uses recorded digest store |
-| Worker reorder | Concurrent completion ordering | Three chunks with forced inverse delays | Non-monotonic assignments observed; offset reconstruction valid | PASS | PBS acceptance remains external evidence |
+| Worker reorder | Concurrent completion ordering | Three chunks released through explicit barriers in reverse order | Non-monotonic assignments, exact reconstruction, and correct ordered checksum | PASS | Deterministic; official PBS writes each digest at the chunk position derived from offset and size |
 | PBS 200 recorder | Call coverage | Create/upload/assign/close/blob/manifest/finish | All calls recorded | PASS | `httptest`, no PBS server |
 | UploadBlob non-2xx | False success | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Production bug intentionally unfixed |
 | UploadManifest non-2xx | False success | 400/401/403/500 | Current nil return demonstrated | CHARACTERIZED | Delegates to UploadBlob |
@@ -35,4 +35,21 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | VSS writer state | Application consistency | Writer success/failure | Fail or downgrade per explicit policy | PLANNED | Not currently queried |
 | Snapshot cleanup | Leaked shadow copies | Callback success/error/panic | Release exactly once | PLANNED | Needs injectable snapshotter |
 | VSS padding | Partition-size preservation | Snapshot shorter than partition | Zero-pad exact deficit only | PLANNED | Preserve historical behavior |
-| Official PBS semantics | Non-monotonic fixed assignments | Recorded out-of-order PUTs | Confirm accept/reject from official code/protocol | PLANNED | Do not infer from mock |
+| Official PBS semantics | Non-monotonic fixed assignments | Official `fixed_append` and `fixed_writer_append_chunk` behavior | Digest is written at the position calculated from offset and size; monotonic arrival is not required | PASS | Verified separately against current PBS `src/api2/backup/mod.rs` and `environment.rs` |
+
+
+## Validation report
+
+The Phase 1 validation was run with module-specific commands rather than a repository-root `go test ./...` claim:
+
+- `machinebackup`: tests passed; `go vet` passed; Linux build passed; Windows amd64 cross-build passed.
+- `pbscommon`: characterization tests passed with `-vet=off`. Standard `go test` does not pass because `go vet` detects the pre-existing `pbsapi.go` `fmt.Errorf` call with arguments but no formatting directives; that production defect is intentionally not fixed in this phase.
+- `directorybackup`: Linux and Windows amd64 builds passed.
+- `nbd`: Linux build passed.
+- `git diff --check`: passed.
+
+No backup, restore, or real `PhysicalDrive` access was performed.
+
+## Synthetic DiskLayout boundary
+
+`DiskLayout` is deliberately disconnected from the production Windows acquisition path. It is a synthetic, deterministic model used to specify ordering, overlap, bounds, MBR/GPT, and gap behavior for the future disk-layout validation phase. It does not inspect, validate, size, or acquire any real disk today.
