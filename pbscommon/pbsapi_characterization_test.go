@@ -1,23 +1,177 @@
 package pbscommon
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func waitTestSignal(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal(message)
+	}
+}
+
+func TestPBSUpgradeCancellationClosesOwnedConnection(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() { _ = serverConn.Close() })
+	requestRead := make(chan struct{})
+	peerClosed := make(chan struct{})
+	go func() {
+		reader := bufio.NewReader(serverConn)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				close(peerClosed)
+				return
+			}
+			if line == "\r\n" {
+				close(requestRead)
+				break
+			}
+		}
+		_, _ = reader.ReadByte()
+		close(peerClosed)
+	}()
+
+	pbs := &PBSClient{Manifest: BackupManifest{BackupTime: 1, BackupType: "host", BackupID: "test"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := pbs.upgradePBSConnection(ctx, clientConn, false)
+		result <- err
+	}()
+	waitTestSignal(t, requestRead, "upgrade request was not written")
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("upgrade error=%v, want context cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked upgrade did not return after cancellation")
+	}
+	waitTestSignal(t, peerClosed, "owned upgrade connection remained open")
+}
+
+func TestPBSUpgradeCancellationBeforeStart(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pbs := &PBSClient{}
+	conn, err := pbs.upgradePBSConnection(ctx, clientConn, false)
+	if conn != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("conn=%v error=%v, want nil context cancellation", conn, err)
+	}
+	peerClosed := make(chan struct{})
+	go func() {
+		_, _ = serverConn.Read(make([]byte, 1))
+		close(peerClosed)
+	}()
+	waitTestSignal(t, peerClosed, "pre-canceled upgrade connection remained open")
+}
+
+func TestPBSTLSHandshakeCancellation(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	helloRead := make(chan struct{})
+	peerClosed := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			close(peerClosed)
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		if _, readErr := conn.Read(buf); readErr == nil {
+			close(helloRead)
+			_, _ = conn.Read(buf)
+		}
+		close(peerClosed)
+	}()
+
+	pbs := &PBSClient{TLSConfig: tls.Config{InsecureSkipVerify: true}}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, dialErr := pbs.dialPBSTLS(ctx, "tcp", listener.Addr().String())
+		result <- dialErr
+	}()
+	waitTestSignal(t, helloRead, "TLS ClientHello was not received")
+	cancel()
+	select {
+	case dialErr := <-result:
+		if !errors.Is(dialErr, context.Canceled) {
+			t.Fatalf("TLS dial error=%v, want context cancellation", dialErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("TLS handshake did not return after cancellation")
+	}
+	waitTestSignal(t, peerClosed, "TLS handshake connection remained open")
+}
+
+func TestPBSUpgradeSuccessAndServerError(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response string
+		wantErr  bool
+	}{
+		{name: "success", response: "HTTP/1.1 101 Switching Protocols\r\n\r\n"},
+		{name: "server error", response: "HTTP/1.1 401 Unauthorized\r\n\r\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			go func() {
+				defer serverConn.Close()
+				reader := bufio.NewReader(serverConn)
+				for {
+					line, err := reader.ReadString('\n')
+					if err != nil || line == "\r\n" {
+						break
+					}
+				}
+				_, _ = io.WriteString(serverConn, tc.response)
+			}()
+			pbs := &PBSClient{Manifest: BackupManifest{BackupTime: 1, BackupType: "host", BackupID: "test"}}
+			conn, err := pbs.upgradePBSConnection(context.Background(), clientConn, false)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("server error produced nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.Close()
+		})
+	}
+}
 
 func TestFixedChunkRequestObservesContextCancellation(t *testing.T) {
 	started := make(chan struct{})

@@ -589,6 +589,101 @@ func (pbs *PBSClient) Finish() error {
 	return nil
 }
 
+func (pbs *PBSClient) dialPBSTLS(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := tls.Dialer{Config: &pbs.TLSConfig}
+	conn, err := dialer.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := context.Cause(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (pbs *PBSClient) upgradePBSConnection(ctx context.Context, conn net.Conn, reader bool) (net.Conn, error) {
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	succeeded := false
+	defer func() {
+		stopCancel()
+		if !succeeded {
+			_ = conn.Close()
+		}
+	}()
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+
+	q := &url.Values{}
+	q.Add("backup-time", fmt.Sprintf("%d", pbs.Manifest.BackupTime))
+	q.Add("backup-type", pbs.Manifest.BackupType)
+	q.Add("store", pbs.Datastore)
+	if pbs.Namespace != "" {
+		q.Add("ns", pbs.Namespace)
+	}
+	q.Add("backup-id", pbs.Manifest.BackupID)
+	fmt.Println(q.Encode())
+
+	endpoint := "/api2/json/backup"
+	upgrade := "proxmox-backup-protocol-v1"
+	if reader {
+		endpoint = "/api2/json/reader"
+		upgrade = "proxmox-backup-reader-protocol-v1"
+	}
+	request := "GET " + endpoint + "?" + q.Encode() + " HTTP/1.1\r\n" +
+		"Authorization: " + fmt.Sprintf("PBSAPIToken=%s:%s", pbs.AuthID, pbs.Secret) + "\r\n" +
+		"Upgrade: " + upgrade + "\r\n" +
+		"Connection: Upgrade\r\n\r\n"
+	if _, err := io.WriteString(conn, request); err != nil {
+		if ctxErr := context.Cause(ctx); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, err
+	}
+
+	fmt.Printf("Reading response to upgrade...\n")
+	buf := make([]byte, 0)
+	for !strings.HasSuffix(string(buf), "\r\n\r\n") && !strings.HasSuffix(string(buf), "\n\n") {
+		byteBuffer := make([]byte, 1)
+		bytesRead, err := conn.Read(byteBuffer)
+		if err != nil || bytesRead == 0 {
+			if ctxErr := context.Cause(ctx); ctxErr != nil {
+				return nil, ctxErr
+			}
+			fmt.Println("Connection unexpectedly closed")
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+		buf = append(buf, byteBuffer[:bytesRead]...)
+	}
+	lines := strings.Split(string(buf), "\n")
+	if len(lines) > 0 {
+		tokens := strings.Split(lines[0], " ")
+		if len(tokens) > 1 && tokens[1] != "101" {
+			fmt.Println("Unexpected response code: " + strings.Join(tokens[1:], " "))
+			fmt.Println(string(buf))
+			return nil, &AuthErr{}
+		}
+	}
+	if !stopCancel() {
+		if err := context.Cause(ctx); err != nil {
+			return nil, err
+		}
+		return nil, context.Canceled
+	}
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("Upgraderesp: %s\n", string(buf))
+	fmt.Println("Successfully upgraded to HTTP/2.")
+	succeeded = true
+	return conn, nil
+}
+
 func (pbs *PBSClient) Connect(reader bool, backuptype string) {
 
 	dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
@@ -613,67 +708,14 @@ func (pbs *PBSClient) Connect(reader bool, backuptype string) {
 		Transport: &http2.Transport{
 
 			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-
-				//This is one of the trickiest parts, GO http2 library does not support starting with http1 and upgrading to 2 after
-				//So to achieve that the function to create SSL socket has been hijacked here
-				//Here an http 1.1 request to authenticate, start the backup and require upgrade to HTTP2 is done then the socket is passed to
-				// http2.Transport handler
-				conn, err := tls.Dial(network, addr, &pbs.TLSConfig)
+				// PBS authenticates and upgrades this owned TLS connection before
+				// handing it to the HTTP/2 transport. The request context covers
+				// both TLS dialing and the blocking upgrade exchange.
+				conn, err := pbs.dialPBSTLS(ctx, network, addr)
 				if err != nil {
 					return nil, err
 				}
-				q := &url.Values{}
-				q.Add("backup-time", fmt.Sprintf("%d", pbs.Manifest.BackupTime))
-				q.Add("backup-type", pbs.Manifest.BackupType)
-				q.Add("store", pbs.Datastore)
-				if pbs.Namespace != "" {
-					q.Add("ns", pbs.Namespace)
-				}
-
-				q.Add("backup-id", pbs.Manifest.BackupID)
-				fmt.Println(q.Encode())
-				//q.Add("debug", "1")
-				if !reader {
-					conn.Write([]byte("GET /api2/json/backup?" + q.Encode() + " HTTP/1.1\r\n"))
-				} else {
-					conn.Write([]byte("GET /api2/json/reader?" + q.Encode() + " HTTP/1.1\r\n"))
-				}
-
-				conn.Write([]byte("Authorization: " + fmt.Sprintf("PBSAPIToken=%s:%s", pbs.AuthID, pbs.Secret) + "\r\n"))
-				if !reader {
-					conn.Write([]byte("Upgrade: proxmox-backup-protocol-v1\r\n"))
-				} else {
-					conn.Write([]byte("Upgrade: proxmox-backup-reader-protocol-v1\r\n"))
-				}
-				conn.Write([]byte("Connection: Upgrade\r\n\r\n"))
-				fmt.Printf("Reading response to upgrade...\n")
-				buf := make([]byte, 0)
-				for !strings.HasSuffix(string(buf), "\r\n\r\n") && !strings.HasSuffix(string(buf), "\n\n") {
-					//fmt.Println(buf)
-					b2 := make([]byte, 1)
-					nbytes, err := conn.Read(b2)
-					if err != nil || nbytes == 0 {
-						fmt.Println("Connection unexpectedly closed")
-						return nil, err
-					}
-					buf = append(buf, b2[:nbytes]...)
-
-					//fmt.Println(string(b2))
-				}
-				lines := strings.Split(string(buf), "\n")
-
-				if len(lines) > 0 {
-					toks := strings.Split(lines[0], " ")
-					if len(toks) > 1 && toks[1] != "101" {
-						fmt.Println("Unexpected response code: " + strings.Join(toks[1:], " "))
-						fmt.Println(string(buf))
-						return nil, &AuthErr{}
-					}
-				}
-
-				fmt.Printf("Upgraderesp: %s\n", string(buf))
-				fmt.Println("Successfully upgraded to HTTP/2.")
-				return conn, nil
+				return pbs.upgradePBSConnection(ctx, conn, reader)
 			},
 		},
 	}

@@ -2,8 +2,8 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-14 - FASE 2B / 2B.1 I/O CANCELLATION.
-Completion gate della pipeline FIDX sui confini di rete PBS e lettura Windows/VSS.
+2026-08-14 - FASE 2C WINDOWS BLOCKING I/O + HTTP/2 CONNECT CANCELLATION HARDENING.
+Hardening del TLS dial e dell'upgrade PBS; valutazione fail-closed di CancelIoEx sul percorso Windows corrente.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
@@ -22,22 +22,18 @@ BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-55ca06573e3af54aa9469641d34f535114d17e78 implementazione locale Fase 2B revisionata.
-Lo SHA del review-gate documentale è riportato nell'output Codex dopo il commit.
+37680b3 snapshot locale consolidato Fasi 1, 2A, 2B e 2B.1 prima della Fase 2C.
+Lo SHA finale Fase 2C è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
 77e05cbd6e480c5c7e6bc12d6ea3aac0280bccb2, comunicato e verificato dall'utente prima della Fase 2B.
 
 FILE MODIFICATI:
-- docs/SBAM-CORE-AUDIT.md
-- docs/SBAM-CORRECTNESS-PLAN.md
 - docs/SBAM-WORK-STATUS.txt
-- machinebackup/main.go
-- machinebackup/windows.go
-- machinebackup/fidx_harness_test.go
 - pbscommon/pbsapi.go
 - pbscommon/pbsapi_characterization_test.go
 Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
+Il percorso Windows è stato analizzato ma non modificato: applicare CancelIoEx al corrente I/O sincrono non fornirebbe la garanzia richiesta.
 
 LAVORO ESEGUITO:
 - Sostituito il fragile errch per-worker con context condiviso, first-error protetto e WaitGroup.
@@ -56,6 +52,9 @@ LAVORO ESEGUITO:
 - Create/upload/assign/close e download dell'indice precedente costruiscono request con NewRequestWithContext.
 - La cancellation della pipeline interrompe una richiesta fixed-chunk in-flight, verificata sia al server httptest sia dal workflow uploadWorker.
 - Il PhysicalDrive e il file snapshot VSS attualmente letti ricevono un close hook legato al context; ownership e chiusura normale restano nel producer.
+- Il TLS dial iniziale usa ora tls.Dialer.DialContext, senza timeout globale del client.
+- L'upgrade HTTP/1.1 verso il protocollo PBS è isolato in una funzione context-aware: cancellation chiude soltanto la connessione posseduta, sblocca write/read, preserva context.Canceled e chiude anche sui server error.
+- CancelIoEx NON è stato applicato cosmeticamente: le sorgenti sono aperte con os.Open e il percorso Go corrente usa handle/file I/O sincroni; CancelIoEx è definito per pending asynchronous I/O e os.File.Fd non è sicuro durante I/O concorrente. La Close già presente resta la misura prudente.
 
 TEST PASSATI:
 - machinebackup success path byte-for-byte e checksum -> PASS
@@ -72,18 +71,22 @@ TEST PASSATI:
 - PBS request context cancellation osservata dal server httptest -> PASS
 - pipeline FIDX termina dopo cancellazione di upload PBS in-flight -> PASS
 - reader/closer sintetico bloccante sbloccato dalla Close su cancellation -> PASS
+- TLS handshake locale bloccato, cancellato via context e connessione peer chiusa -> PASS
+- upgrade PBS bloccato, cancellato via context e connessione peer chiusa -> PASS
+- upgrade pre-cancellato -> PASS
+- upgrade 101 normale e risposta server 401 -> PASS
 
 TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
 - I timeout nei test sono soltanto guardie anti-deadlock; l'ordine è controllato da channel/barrier.
 - Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
 - PBS NETWORK CANCELLATION: PASS per le operazioni FIDX percorse da machinebackup; nessun timeout globale arbitrario è stato introdotto.
-- Il test copre una richiesta su connessione stabilita. L'handshake/upgrade personalizzato in Connect usa ancora operazioni socket interne non tutte context-aware; il relativo hardening resta separato dalla cancellazione delle request FIDX in-flight qui completata.
-- WINDOWS BLOCKING READ CANCELLATION: WARNING. La cancellation tenta ora Close sia sul PhysicalDrive sia sul file snapshot VSS attivo ed è verificata con un reader/closer sintetico. Go/os e CloseHandle non garantiscono però universalmente che ogni I/O kernel-level Windows pendente venga annullato; una garanzia reale richiede una fase dedicata con API Windows (per esempio CancelIoEx) e test Windows specifici.
+- HTTP/2 CONNECT CANCELLATION: IMPLEMENTED / PASS nei test locali sintetici per handshake, upgrade, pre-cancel, success e server error. Nessun timeout globale arbitrario è stato introdotto.
+- WINDOWS I/O CANCELLATION: WARNING / VALIDATION PENDING. La Close context-aware resta implementata per PhysicalDrive e snapshot VSS, ma nessuna garanzia CancelIoEx viene dichiarata sul corrente I/O sincrono. Una soluzione definitiva richiede apertura/lettura overlapped progettata esplicitamente oppure CancelSynchronousIo con ownership del thread, più runtime test Windows sicuri.
+- Questo ambiente Linux ha consentito soltanto cross-build Windows amd64, non runtime validation Windows.
 - Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
 
 BUG CONFERMATI ANCORA APERTI:
-- Cancellazione context-aware dell'handshake/upgrade HTTP/2 iniziale di Connect.
 - Garanzia Windows-specific dell'annullamento di I/O kernel-level pendente su disco/snapshot.
 - newchunk/reusechunk e ChunkUploadStats non completati.
 - VSS consistency multi-volume, writer state e cleanup da completare.
@@ -100,6 +103,8 @@ BUG RISOLTI:
 - Blocco dei channel e goroutine orfane nei percorsi sintetici coperti.
 - Producer error propagation e conversione controllata dei panic producer.
 - Nessuna finalizzazione FIDX o falso successo dopo errore pipeline.
+- Cancellazione context-aware del TLS handshake e dell'upgrade PBS HTTP/2 custom.
+- Cleanup della connessione posseduta su cancellation, errore I/O e risposta server non-101.
 
 IPOTESI / LAVORO ANCORA APERTO:
 - Statistiche logiche/compresse/trasmesse/riutilizzate.
@@ -115,15 +120,15 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun merge su master.
 
 STATO FINALE:
-PASS CON WARNING nel workspace locale: PBS FIDX network cancellation è verificata; la Close della sorgente Windows è cablata e testata sinteticamente, ma non costituisce garanzia universale di cancellazione kernel-level Windows. Non equivale a pubblicazione GitHub.
+PASS CON WARNING nel workspace locale: HTTP/2 Connect cancellation è verificata; Windows pending kernel I/O resta VALIDATION PENDING e non viene falsamente dichiarato risolto. Non equivale a pubblicazione GitHub.
 
 PROSSIMO PASSO CONSIGLIATO:
-Pianificare una fase specifica "Windows blocking I/O cancellation" con CancelIoEx o API equivalente e test Windows.
+Prototipare I/O Windows overlapped scoped agli handle SBAM in un ambiente Windows isolato.
+Validare runtime CancelIoEx/ERROR_NOT_FOUND e completamento I/O prima di sostituire il percorso sincrono.
 Successivamente completare statistiche usando ChunkUploadStats upstream esistente.
 
 ULTIME OPERAZIONI GIT:
-- 55ca065 implementazione locale Fase 2B revisionata
-- 60a5463 stato iniziale locale Fase 1 + 2A
+- 37680b3 stato iniziale locale consolidato Fasi 1-2B.1
 - 77e05cb stato GitHub iniziale comunicato dall'utente
 - 519b624 base upstream originale
-- Working tree Fase 2B: soli file pertinenti; go.work.sum escluso.
+- Dopo il commit Fase 2C il working tree contiene soltanto go.work.sum preesistente e non tracciato.
