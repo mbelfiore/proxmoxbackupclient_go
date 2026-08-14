@@ -212,11 +212,15 @@ func (pbs *PBSClient) ListSnapshots() ([]BackupManifest, error) {
 }
 
 func (pbs *PBSClient) CreateFixedIndex(fic FixedIndexCreateReq) (uint64, error) {
+	return pbs.CreateFixedIndexContext(context.Background(), fic)
+}
+
+func (pbs *PBSClient) CreateFixedIndexContext(ctx context.Context, fic FixedIndexCreateReq) (uint64, error) {
 	jd, err := json.Marshal(fic)
 	if err != nil {
 		return 0, err
 	}
-	req, err := http.NewRequest("POST", pbs.BaseURL+"/fixed_index", bytes.NewBuffer(jd))
+	req, err := http.NewRequestWithContext(ctx, "POST", pbs.BaseURL+"/fixed_index", bytes.NewBuffer(jd))
 	if err != nil {
 		return 0, err
 	}
@@ -258,6 +262,10 @@ func (pbs *PBSClient) CreateFixedIndex(fic FixedIndexCreateReq) (uint64, error) 
 }
 
 func (pbs *PBSClient) AssignFixedChunks(writerid uint64, digests []string, offsets []uint64) error {
+	return pbs.AssignFixedChunksContext(context.Background(), writerid, digests, offsets)
+}
+
+func (pbs *PBSClient) AssignFixedChunksContext(ctx context.Context, writerid uint64, digests []string, offsets []uint64) error {
 	indexput := &IndexPutReq{
 		WriterID:   writerid,
 		DigestList: digests,
@@ -269,7 +277,7 @@ func (pbs *PBSClient) AssignFixedChunks(writerid uint64, digests []string, offse
 		return err
 	}
 
-	req, err := http.NewRequest("PUT", pbs.BaseURL+"/fixed_index", bytes.NewBuffer(jsondata))
+	req, err := http.NewRequestWithContext(ctx, "PUT", pbs.BaseURL+"/fixed_index", bytes.NewBuffer(jsondata))
 	if err != nil {
 		return err
 	}
@@ -288,6 +296,10 @@ func (pbs *PBSClient) AssignFixedChunks(writerid uint64, digests []string, offse
 }
 
 func (pbs *PBSClient) CloseFixedIndex(writerid uint64, checksum string, totalsize uint64, chunkcount uint64) error {
+	return pbs.CloseFixedIndexContext(context.Background(), writerid, checksum, totalsize, chunkcount)
+}
+
+func (pbs *PBSClient) CloseFixedIndexContext(ctx context.Context, writerid uint64, checksum string, totalsize uint64, chunkcount uint64) error {
 	finishreq := &IndexCloseReq{
 		WriterID:   writerid,
 		CheckSum:   checksum,
@@ -298,7 +310,7 @@ func (pbs *PBSClient) CloseFixedIndex(writerid uint64, checksum string, totalsiz
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", pbs.BaseURL+"/fixed_close", bytes.NewBuffer(jsonpayload))
+	req, err := http.NewRequestWithContext(ctx, "POST", pbs.BaseURL+"/fixed_close", bytes.NewBuffer(jsonpayload))
 	if err != nil {
 		return err
 	}
@@ -377,10 +389,17 @@ func (pbs *PBSClient) UploadDynamicCompressedChunk(writerid uint64, digest strin
 	return pbs.UploadChunk(writerid, digest, chunkdata, true, true)
 }
 func (pbs *PBSClient) UploadFixedCompressedChunk(writerid uint64, digest string, chunkdata []byte) error {
-	return pbs.UploadChunk(writerid, digest, chunkdata, false, true)
+	return pbs.UploadFixedCompressedChunkContext(context.Background(), writerid, digest, chunkdata)
+}
+func (pbs *PBSClient) UploadFixedCompressedChunkContext(ctx context.Context, writerid uint64, digest string, chunkdata []byte) error {
+	return pbs.UploadChunkContext(ctx, writerid, digest, chunkdata, false, true)
 }
 
 func (pbs *PBSClient) UploadChunk(writerid uint64, digest string, chunkdata []byte, dynamic bool, compressed bool) error {
+	return pbs.UploadChunkContext(context.Background(), writerid, digest, chunkdata, dynamic, compressed)
+}
+
+func (pbs *PBSClient) UploadChunkContext(ctx context.Context, writerid uint64, digest string, chunkdata []byte, dynamic bool, compressed bool) error {
 	outBuffer := make([]byte, 0)
 	if compressed {
 		outBuffer = append(outBuffer, blobCompressedMagic...)
@@ -398,7 +417,7 @@ func (pbs *PBSClient) UploadChunk(writerid uint64, digest string, chunkdata []by
 		outBuffer = append(outBuffer, compressedData...)
 
 		if len(compressedData) > len(chunkdata) {
-			return pbs.UploadChunk(writerid, digest, chunkdata, dynamic, false)
+			return pbs.UploadChunkContext(ctx, writerid, digest, chunkdata, dynamic, false)
 		}
 	} else {
 		outBuffer = append(outBuffer, blobUncompressedMagic...)
@@ -418,7 +437,7 @@ func (pbs *PBSClient) UploadChunk(writerid uint64, digest string, chunkdata []by
 	if !dynamic {
 		suburl = "/fixed_chunk?"
 	}
-	req, err := http.NewRequest("POST", pbs.BaseURL+suburl+q.Encode(), bytes.NewBuffer(outBuffer))
+	req, err := http.NewRequestWithContext(ctx, "POST", pbs.BaseURL+suburl+q.Encode(), bytes.NewBuffer(outBuffer))
 	if err != nil {
 		fmt.Println("Error making request:", err)
 		return err
@@ -672,15 +691,19 @@ type FIDXHeader struct {
 }
 
 func (pbs *PBSClient) DownloadPreviousToBytes(archivename string) ([]byte, error) { //In the future also download to tmp if index is extremely big...
+	return pbs.DownloadPreviousToBytesContext(context.Background(), archivename)
+}
+
+func (pbs *PBSClient) DownloadPreviousToBytesContext(ctx context.Context, archivename string) ([]byte, error) { //In the future also download to tmp if index is extremely big...
 	q := &url.Values{}
 
 	q.Add("archive-name", archivename)
 
-	req, err := http.NewRequest("GET", pbs.BaseURL+"/previous?"+q.Encode(), nil)
-	req.Header.Add("Authorization", fmt.Sprintf("PBSAPIToken=%s:%s", pbs.AuthID, pbs.Secret))
+	req, err := http.NewRequestWithContext(ctx, "GET", pbs.BaseURL+"/previous?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Add("Authorization", fmt.Sprintf("PBSAPIToken=%s:%s", pbs.AuthID, pbs.Secret))
 	resp2, err := pbs.Client.Do(req)
 	if err != nil {
 		fmt.Println("Error making request:", err)
@@ -726,7 +749,11 @@ func (pbs *PBSClient) DownloadToBytes(archivename string) ([]byte, error) { //In
 }
 
 func (pbs *PBSClient) GetKnownSha265FromFIDX(archivename string) (*haxmap.Map[string, bool], error) {
-	data, err := pbs.DownloadPreviousToBytes(archivename)
+	return pbs.GetKnownSha265FromFIDXContext(context.Background(), archivename)
+}
+
+func (pbs *PBSClient) GetKnownSha265FromFIDXContext(ctx context.Context, archivename string) (*haxmap.Map[string, bool], error) {
+	data, err := pbs.DownloadPreviousToBytesContext(ctx, archivename)
 	if err != nil {
 		fmt.Println("Download of previous failed.")
 		return nil, err

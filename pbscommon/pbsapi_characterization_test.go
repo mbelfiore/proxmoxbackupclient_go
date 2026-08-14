@@ -1,6 +1,7 @@
 package pbscommon
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -17,6 +18,45 @@ import (
 	"testing"
 	"time"
 )
+
+func TestFixedChunkRequestObservesContextCancellation(t *testing.T) {
+	started := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(started)
+		<-r.Context().Done()
+		close(requestCanceled)
+	}))
+	t.Cleanup(server.Close)
+
+	client := &PBSClient{BaseURL: server.URL, Client: *server.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- client.UploadFixedCompressedChunkContext(ctx, 1, strings.Repeat("0", 64), []byte{1})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fixed chunk request did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("canceled fixed chunk request returned nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fixed chunk request did not return after cancellation")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP server did not observe request context cancellation")
+	}
+}
 
 func protocolClient(t *testing.T, status int, body any) (*PBSClient, *[]string) {
 	t.Helper()

@@ -61,11 +61,11 @@ type Partition struct {
 // Keeping this boundary small permits an in-memory correctness harness without
 // changing the production protocol implementation.
 type fixedIndexClient interface {
-	GetKnownSha265FromFIDX(string) (*haxmap.Map[string, bool], error)
-	CreateFixedIndex(pbscommon.FixedIndexCreateReq) (uint64, error)
-	UploadFixedCompressedChunk(uint64, string, []byte) error
-	AssignFixedChunks(uint64, []string, []uint64) error
-	CloseFixedIndex(uint64, string, uint64, uint64) error
+	GetKnownSha265FromFIDXContext(context.Context, string) (*haxmap.Map[string, bool], error)
+	CreateFixedIndexContext(context.Context, pbscommon.FixedIndexCreateReq) (uint64, error)
+	UploadFixedCompressedChunkContext(context.Context, uint64, string, []byte) error
+	AssignFixedChunksContext(context.Context, uint64, []string, []uint64) error
+	CloseFixedIndexContext(context.Context, uint64, string, uint64, uint64) error
 }
 
 func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, knownChunks *haxmap.Map[string, bool]) {
@@ -99,6 +99,11 @@ func BytesToString(b int64) string {
 
 type blockProducer func(context.Context, func([]byte) error) error
 
+func closeOnCancellation(ctx context.Context, closer io.Closer) func() {
+	stop := context.AfterFunc(ctx, func() { _ = closer.Close() })
+	return func() { stop() }
+}
+
 func uploadWorker(client fixedIndexClient, filename string, totalSize uint64, producer blockProducer) error {
 	return uploadWorkerWithProcessedHook(context.Background(), client, filename, totalSize, producer, nil)
 }
@@ -113,7 +118,7 @@ func uploadWorkerWithProcessedHook(parent context.Context, client fixedIndexClie
 	reusechunk := new(atomic.Uint64)
 	knownChunks := haxmap.New[string, bool]()
 
-	knownChunks2, err := client.GetKnownSha265FromFIDX(filename)
+	knownChunks2, err := client.GetKnownSha265FromFIDXContext(ctx, filename)
 	if err == nil {
 		knownChunks = knownChunks2
 	} else {
@@ -122,7 +127,7 @@ func uploadWorkerWithProcessedHook(parent context.Context, client fixedIndexClie
 
 	CS := ChunkState{}
 	CS.Init(newchunk, reusechunk, knownChunks)
-	wrid, err := client.CreateFixedIndex(pbscommon.FixedIndexCreateReq{
+	wrid, err := client.CreateFixedIndexContext(ctx, pbscommon.FixedIndexCreateReq{
 		ArchiveName: filename,
 		Size:        int64(totalSize),
 	})
@@ -218,7 +223,7 @@ func uploadWorkerWithProcessedHook(parent context.Context, client fixedIndexClie
 						return
 					default:
 					}
-					if err := client.UploadFixedCompressedChunk(wrid, shaHash, segment.data); err != nil {
+					if err := client.UploadFixedCompressedChunkContext(ctx, wrid, shaHash, segment.data); err != nil {
 						fail(err)
 						return
 					}
@@ -266,7 +271,7 @@ func uploadWorkerWithProcessedHook(parent context.Context, client fixedIndexClie
 	// Avoid request-entity-too-large responses by assigning at most 128 chunks.
 	for offset := 0; offset < len(CS.assignments); offset += 128 {
 		end := min(offset+128, len(CS.assignments))
-		if err := client.AssignFixedChunks(wrid, CS.assignments[offset:end], CS.assignments_offset[offset:end]); err != nil {
+		if err := client.AssignFixedChunksContext(ctx, wrid, CS.assignments[offset:end], CS.assignments_offset[offset:end]); err != nil {
 			return err
 		}
 	}
@@ -278,7 +283,7 @@ func uploadWorkerWithProcessedHook(parent context.Context, client fixedIndexClie
 		_, _ = chunkDigests.Write(CS.index_hash_data[position])
 	}
 
-	return client.CloseFixedIndex(wrid, hex.EncodeToString(chunkDigests.Sum(nil)), CS.processed_size, CS.chunkcount)
+	return client.CloseFixedIndexContext(ctx, wrid, hex.EncodeToString(chunkDigests.Sum(nil)), CS.processed_size, CS.chunkcount)
 }
 
 func Slugify(input string) string {
@@ -322,7 +327,7 @@ func backupFileDevice(client *pbscommon.PBSClient, filename string) error {
 		return err
 	}
 	producer := func(ctx context.Context, emit func([]byte) error) error {
-		stopClose := context.AfterFunc(ctx, func() { _ = file.Close() })
+		stopClose := closeOnCancellation(ctx, file)
 		defer stopClose()
 		if _, err := file.Seek(0, io.SeekStart); err != nil {
 			return err

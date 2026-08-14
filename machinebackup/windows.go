@@ -408,7 +408,7 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 		defer physicalDisk.Close()
 
 		producer := func(ctx context.Context, emit func([]byte) error) error {
-			stopClose := context.AfterFunc(ctx, func() { _ = physicalDisk.Close() })
+			stopClose := closeOnCancellation(ctx, physicalDisk)
 			defer stopClose()
 			buffer := make([]byte, 0)
 			emitBuffered := func(data []byte) error {
@@ -461,12 +461,15 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 				if err != nil {
 					return err
 				}
+				stopSnapshotClose := closeOnCancellation(ctx, snapshotFile)
 				snapshotLength, err := GetDiskLength(snapshotPath)
 				if err != nil {
+					stopSnapshotClose()
 					snapshotFile.Close()
 					return err
 				}
 				if snapshotLength < 0 || uint64(snapshotLength) > partition.EndByte-partition.StartByte {
+					stopSnapshotClose()
 					snapshotFile.Close()
 					return fmt.Errorf("VSS snapshot length %d exceeds partition length %d", snapshotLength, partition.EndByte-partition.StartByte)
 				}
@@ -480,10 +483,12 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 					bytesRead, readErr := snapshotFile.Read(block)
 					if bytesRead > 0 {
 						if position+uint64(bytesRead) > partition.EndByte {
+							stopSnapshotClose()
 							snapshotFile.Close()
 							return fmt.Errorf("fatal: went outside partition space while reading VSS snapshot")
 						}
 						if emitErr := emitBuffered(block[:bytesRead]); emitErr != nil {
+							stopSnapshotClose()
 							snapshotFile.Close()
 							return emitErr
 						}
@@ -493,14 +498,17 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 						break
 					}
 					if readErr != nil {
+						stopSnapshotClose()
 						snapshotFile.Close()
 						return readErr
 					}
 					if bytesRead == 0 {
+						stopSnapshotClose()
 						snapshotFile.Close()
 						return fmt.Errorf("failed to read VSS snapshot at %d", position)
 					}
 				}
+				stopSnapshotClose()
 				if err := snapshotFile.Close(); err != nil {
 					return err
 				}

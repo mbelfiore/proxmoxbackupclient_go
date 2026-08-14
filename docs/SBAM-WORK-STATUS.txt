@@ -2,8 +2,8 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-14 - FASE 2B REVIEW GATE / FOTOGRAFIA DEL QUADRO.
-Revisione della pipeline FIDX, degli invarianti Windows/VSS e dei limiti reali della cancellazione di rete.
+2026-08-14 - FASE 2B / 2B.1 I/O CANCELLATION.
+Completion gate della pipeline FIDX sui confini di rete PBS e lettura Windows/VSS.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
@@ -35,6 +35,8 @@ FILE MODIFICATI:
 - machinebackup/main.go
 - machinebackup/windows.go
 - machinebackup/fidx_harness_test.go
+- pbscommon/pbsapi.go
+- pbscommon/pbsapi_characterization_test.go
 Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
 
 LAVORO ESEGUITO:
@@ -50,6 +52,10 @@ LAVORO ESEGUITO:
 - Copiati i blocchi emessi dal buffer Windows per evitare mutazioni concorrenti dell'array sottostante.
 - Preservati digest/checksum ordinato, assignment fuori ordine, dedup e zero-block optimization.
 - Nessuna modifica a statistiche, VSS policy, mount mapping, P2V, NBD, GUI o telemetry.
+- Le sole API FIDX usate da machinebackup hanno ora varianti context-aware; i wrapper storici restano compatibili usando context.Background.
+- Create/upload/assign/close e download dell'indice precedente costruiscono request con NewRequestWithContext.
+- La cancellation della pipeline interrompe una richiesta fixed-chunk in-flight, verificata sia al server httptest sia dal workflow uploadWorker.
+- Il PhysicalDrive e il file snapshot VSS attualmente letti ricevono un close hook legato al context; ownership e chiusura normale restano nel producer.
 
 TEST PASSATI:
 - machinebackup success path byte-for-byte e checksum -> PASS
@@ -63,19 +69,22 @@ TEST PASSATI:
 - PhysicalDrive case-insensitive regression Fase 2A -> PASS
 - PBS HTTP/TLS/body lifecycle regression Fase 2A -> PASS
 - comandi finali di test/vet/build elencati nell'output Codex -> PASS
+- PBS request context cancellation osservata dal server httptest -> PASS
+- pipeline FIDX termina dopo cancellazione di upload PBS in-flight -> PASS
+- reader/closer sintetico bloccante sbloccato dalla Close su cancellation -> PASS
 
 TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
 - I timeout nei test sono soltanto guardie anti-deadlock; l'ordine è controllato da channel/barrier.
 - Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
-- La cancellazione Fase 2B non viene propagata alle richieste PBS: fixedIndexClient non accetta context e le richieste usano http.NewRequest senza WithContext/NewRequestWithContext.
-- Il client HTTP/2 configurato da Connect non imposta un Timeout globale e il DialTLSContext usa tls.Dial senza il context ricevuto. Un PBS lento o non rispondente può quindi trattenere un worker già dentro Do e, poiché il lifecycle lo attende, ritardare indefinitamente il ritorno della pipeline. È richiesto hardening di rete con test dedicati in una fase separata.
-- Il reader PhysicalDrive viene chiuso su cancellation, ma il file di snapshot VSS attualmente aperto non ha un close hook collegato al context; una Read VSS non interrompibile può analogamente ritardare il producer. La futura fase Windows/VSS deve coprire questo lifecycle senza cambiare la policy VSS incidentalmente.
+- PBS NETWORK CANCELLATION: PASS per le operazioni FIDX percorse da machinebackup; nessun timeout globale arbitrario è stato introdotto.
+- Il test copre una richiesta su connessione stabilita. L'handshake/upgrade personalizzato in Connect usa ancora operazioni socket interne non tutte context-aware; il relativo hardening resta separato dalla cancellazione delle request FIDX in-flight qui completata.
+- WINDOWS BLOCKING READ CANCELLATION: WARNING. La cancellation tenta ora Close sia sul PhysicalDrive sia sul file snapshot VSS attivo ed è verificata con un reader/closer sintetico. Go/os e CloseHandle non garantiscono però universalmente che ogni I/O kernel-level Windows pendente venga annullato; una garanzia reale richiede una fase dedicata con API Windows (per esempio CancelIoEx) e test Windows specifici.
 - Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
 
 BUG CONFERMATI ANCORA APERTI:
-- Propagazione context/deadline nelle richieste PBS e nel dial HTTP/2.
-- Cancellazione della lettura del file snapshot VSS attivo.
+- Cancellazione context-aware dell'handshake/upgrade HTTP/2 iniziale di Connect.
+- Garanzia Windows-specific dell'annullamento di I/O kernel-level pendente su disco/snapshot.
 - newchunk/reusechunk e ChunkUploadStats non completati.
 - VSS consistency multi-volume, writer state e cleanup da completare.
 - Mapping Windows volume/GUID/mount-point incompleto.
@@ -106,11 +115,10 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun merge su master.
 
 STATO FINALE:
-PASS CON WARNING nel workspace locale: ownership/channel/error propagation sono verificati, ma una richiesta PBS o Read VSS già bloccata non osserva ancora la cancellation. Non equivale a pubblicazione GitHub.
+PASS CON WARNING nel workspace locale: PBS FIDX network cancellation è verificata; la Close della sorgente Windows è cablata e testata sinteticamente, ma non costituisce garanzia universale di cancellazione kernel-level Windows. Non equivale a pubblicazione GitHub.
 
 PROSSIMO PASSO CONSIGLIATO:
-Prima aggiungere context/deadline testabili alle operazioni PBS senza cambiare la semantica FIDX.
-Poi coprire la cancellazione del reader VSS e il lifecycle degli handle Windows.
+Pianificare una fase specifica "Windows blocking I/O cancellation" con CancelIoEx o API equivalente e test Windows.
 Successivamente completare statistiche usando ChunkUploadStats upstream esistente.
 
 ULTIME OPERAZIONI GIT:

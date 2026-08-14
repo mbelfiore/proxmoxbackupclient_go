@@ -7,6 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"sync"
@@ -37,17 +40,34 @@ type fixedIndexMock struct {
 	closeCalls              int
 }
 
+type blockingReadCloser struct {
+	started chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingReadCloser) Read([]byte) (int, error) {
+	close(r.started)
+	<-r.closed
+	return 0, errors.New("synthetic read interrupted by close")
+}
+
+func (r *blockingReadCloser) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
 func newFixedIndexMock() *fixedIndexMock {
 	return &fixedIndexMock{known: haxmap.New[string, bool](), chunks: map[string][]byte{}}
 }
-func (m *fixedIndexMock) GetKnownSha265FromFIDX(string) (*haxmap.Map[string, bool], error) {
+func (m *fixedIndexMock) GetKnownSha265FromFIDXContext(context.Context, string) (*haxmap.Map[string, bool], error) {
 	return m.known, nil
 }
-func (m *fixedIndexMock) CreateFixedIndex(r pbscommon.FixedIndexCreateReq) (uint64, error) {
+func (m *fixedIndexMock) CreateFixedIndexContext(_ context.Context, r pbscommon.FixedIndexCreateReq) (uint64, error) {
 	m.created = r
 	return 7, nil
 }
-func (m *fixedIndexMock) UploadFixedCompressedChunk(_ uint64, d string, b []byte) error {
+func (m *fixedIndexMock) UploadFixedCompressedChunkContext(ctx context.Context, _ uint64, d string, b []byte) error {
 	m.mu.Lock()
 	m.uploadCalls++
 	m.activeUploads++
@@ -60,6 +80,9 @@ func (m *fixedIndexMock) UploadFixedCompressedChunk(_ uint64, d string, b []byte
 	if m.beforeUpload != nil {
 		m.beforeUpload(b)
 	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	if m.uploadResult != nil {
 		if err := m.uploadResult(b); err != nil {
 			return err
@@ -70,7 +93,7 @@ func (m *fixedIndexMock) UploadFixedCompressedChunk(_ uint64, d string, b []byte
 	m.chunks[d] = append([]byte(nil), b...)
 	return nil
 }
-func (m *fixedIndexMock) AssignFixedChunks(_ uint64, ds []string, os []uint64) error {
+func (m *fixedIndexMock) AssignFixedChunksContext(_ context.Context, _ uint64, ds []string, os []uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.assignCalls++
@@ -79,7 +102,7 @@ func (m *fixedIndexMock) AssignFixedChunks(_ uint64, ds []string, os []uint64) e
 	}
 	return nil
 }
-func (m *fixedIndexMock) CloseFixedIndex(_ uint64, c string, s, n uint64) error {
+func (m *fixedIndexMock) CloseFixedIndexContext(_ context.Context, _ uint64, c string, s, n uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closeCalls++
@@ -495,5 +518,101 @@ func TestFIDXWriterOverrunReturnsError(t *testing.T) {
 	mock.mu.Unlock()
 	if assignCalls != 0 || closeCalls != 0 {
 		t.Fatalf("pipeline finalized after overrun: assign=%d close=%d", assignCalls, closeCalls)
+	}
+}
+
+func TestFIDXPipelineCancellationInterruptsPBSUpload(t *testing.T) {
+	failingDigest := sha256.Sum256([]byte{1})
+	failingDigestHex := hex.EncodeToString(failingDigest[:])
+	uploadStarted := make(chan string, 2)
+	releaseFailure := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/previous":
+			http.Error(w, "no previous index", http.StatusNotFound)
+		case r.URL.Path == "/fixed_index" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"data":7}`))
+		case r.URL.Path == "/fixed_chunk":
+			_, _ = io.Copy(io.Discard, r.Body)
+			digest := r.URL.Query().Get("digest")
+			uploadStarted <- digest
+			if digest == failingDigestHex {
+				<-releaseFailure
+				http.Error(w, "forced worker failure", http.StatusInternalServerError)
+				return
+			}
+			<-r.Context().Done()
+			close(requestCanceled)
+		default:
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := &pbscommon.PBSClient{
+		BaseURL:         server.URL,
+		Client:          *server.Client(),
+		WritersManifest: map[uint64]int{},
+	}
+	producer := func(_ context.Context, emit func([]byte) error) error {
+		if err := emit([]byte{1}); err != nil {
+			return err
+		}
+		return emit([]byte{2})
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- uploadWorker(client, "disk.fidx", 2, producer)
+	}()
+	started := map[string]bool{}
+	for range 2 {
+		select {
+		case digest := <-uploadStarted:
+			started[digest] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("two concurrent PBS uploads did not start")
+		}
+	}
+	if !started[failingDigestHex] {
+		t.Fatal("forced-failure upload did not start")
+	}
+	close(releaseFailure)
+	if err := waitWorkerResult(t, done); err == nil {
+		t.Fatal("failed PBS upload returned nil")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PBS request did not observe pipeline cancellation")
+	}
+}
+
+func TestFIDXProducerCancellationClosesBlockingSource(t *testing.T) {
+	source := &blockingReadCloser{started: make(chan struct{}), closed: make(chan struct{})}
+	producer := func(ctx context.Context, _ func([]byte) error) error {
+		stopClose := closeOnCancellation(ctx, source)
+		defer stopClose()
+		_, err := source.Read(make([]byte, 1))
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- uploadWorkerWithProcessedHook(ctx, newFixedIndexMock(), "disk.fidx", 1, producer, nil)
+	}()
+	select {
+	case <-source.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("synthetic blocking read did not start")
+	}
+	cancel()
+	if err := waitWorkerResult(t, done); err == nil {
+		t.Fatal("canceled blocking producer returned nil")
+	}
+	select {
+	case <-source.closed:
+	default:
+		t.Fatal("cancellation did not close the active source")
 	}
 }
