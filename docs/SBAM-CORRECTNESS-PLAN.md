@@ -39,6 +39,9 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | VSS writer state | Application consistency | Writer success/failure | Fail or downgrade per explicit policy | PLANNED | Not currently queried |
 | Snapshot cleanup | Leaked shadow copies | Callback success/error/panic | Release exactly once | PLANNED | Needs injectable snapshotter |
 | VSS padding | Partition-size preservation | Snapshot shorter than partition | Zero-pad exact deficit only | PLANNED | Preserve historical behavior |
+| Windows MULTI_SZ | Wrong mount source | Zero, drive root, directory, multiple, malformed | Preserve every path or reject malformed data | PASS | Pure Linux-runnable parser; Phase 2D |
+| Windows volume extents | Truncated/first-extent-only mapping | Single, multi, short, inconsistent, overflow | Parse bounded data; target multi-extent fails closed | PASS | Variable IOCTL buffer in production; Phase 2D |
+| Windows volume mapping | Live-read of mounted filesystem | Other disk, duplicate, unknown, directory-only, no-mount | Explicit VSS mapping or fail closed | PASS | Drive-root VSS source is the supported MVP |
 | Official PBS semantics | Non-monotonic fixed assignments | Official `fixed_append` and `fixed_writer_append_chunk` behavior | Digest is written at the position calculated from offset and size; monotonic arrival is not required | PASS | Verified separately against current PBS `src/api2/backup/mod.rs` and `environment.rs` |
 
 

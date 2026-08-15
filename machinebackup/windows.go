@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,17 +19,6 @@ import (
 	"github.com/tawesoft/golib/v2/dialog"
 	"golang.org/x/sys/windows"
 )
-
-type DISK_EXTENT struct {
-	DiskNumber     uint32
-	StartingOffset int64 // LARGE_INTEGER in C/C++
-	ExtentLength   int64 // LARGE_INTEGER in C/C++
-}
-
-type VOLUME_DISK_EXTENTS struct {
-	NumberOfDiskExtents uint32
-	Extents             [16]DISK_EXTENT // This is a placeholder; actual size depends on NumberOfDiskExtents
-}
 
 type PARTITION_STYLE uint32
 
@@ -100,33 +90,100 @@ var (
 	procGetVolumePathNamesForVolumeW = modkernel32.NewProc("GetVolumePathNamesForVolumeNameW")
 )
 
-type VolumeLetterAssign struct {
-	DiskNumber int32
-	Offset     uint64
-	Letters    []string
+const maxVolumeQueryBuffer = 1024 * 1024
+
+func getVolumeMountPaths(volumeGUID string) ([]string, error) {
+	volumeName, err := windows.UTF16PtrFromString(volumeGUID)
+	if err != nil {
+		return nil, err
+	}
+	buffer := make([]uint16, 256)
+	for {
+		var returnLength uint32
+		result, _, callErr := procGetVolumePathNamesForVolumeW.Call(
+			uintptr(unsafe.Pointer(volumeName)),
+			uintptr(unsafe.Pointer(&buffer[0])),
+			uintptr(len(buffer)),
+			uintptr(unsafe.Pointer(&returnLength)),
+		)
+		if result != 0 {
+			return parseUTF16MultiSZ(buffer, returnLength)
+		}
+		if !errors.Is(callErr, windows.ERROR_MORE_DATA) && !errors.Is(callErr, windows.ERROR_INSUFFICIENT_BUFFER) {
+			return nil, fmt.Errorf("GetVolumePathNamesForVolumeNameW(%s): %w", volumeGUID, callErr)
+		}
+		nextSize := int(returnLength)
+		if nextSize <= len(buffer) {
+			nextSize = len(buffer) * 2
+		}
+		if nextSize <= 0 || nextSize > maxVolumeQueryBuffer/2 {
+			return nil, fmt.Errorf("mount path buffer for %s exceeds safety limit", volumeGUID)
+		}
+		buffer = make([]uint16, nextSize)
+	}
 }
 
-func enumVolumeDiskOffset() ([]VolumeLetterAssign, error) {
-	ret := make([]VolumeLetterAssign, 0)
+func getVolumeDiskExtents(handle windows.Handle, volumeGUID string) ([]WindowsDiskExtent, error) {
+	buffer := make([]byte, volumeDiskExtentsHeaderSize+volumeDiskExtentSize)
+	for {
+		var bytesReturned uint32
+		err := windows.DeviceIoControl(
+			handle,
+			IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+			nil,
+			0,
+			&buffer[0],
+			uint32(len(buffer)),
+			&bytesReturned,
+			nil,
+		)
+		if err == nil {
+			return parseVolumeDiskExtents(buffer, bytesReturned)
+		}
+		if !errors.Is(err, windows.ERROR_MORE_DATA) && !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
+			return nil, fmt.Errorf("IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS(%s): %w", volumeGUID, err)
+		}
+		if len(buffer) >= maxVolumeQueryBuffer {
+			return nil, fmt.Errorf("extent buffer for %s exceeds safety limit", volumeGUID)
+		}
+		nextSize := len(buffer) * 2
+		if nextSize > maxVolumeQueryBuffer {
+			nextSize = maxVolumeQueryBuffer
+		}
+		buffer = make([]byte, nextSize)
+	}
+}
+
+func enumWindowsVolumes() (volumes []WindowsVolume, returnErr error) {
 	volumeName := make([]uint16, windows.MAX_PATH)
 
-	r1, _, _ := procFindFirstVolumeW.Call(
+	result, _, callErr := procFindFirstVolumeW.Call(
 		uintptr(unsafe.Pointer(&volumeName[0])),
 		uintptr(len(volumeName)),
 	)
-	if r1 == 0 {
-		return ret, nil
+	if windows.Handle(result) == windows.InvalidHandle {
+		return nil, fmt.Errorf("FindFirstVolumeW: %w", callErr)
 	}
-	findHandle := windows.Handle(r1)
-	defer procFindVolumeClose.Call(uintptr(findHandle))
+	findHandle := windows.Handle(result)
+	defer func() {
+		closed, _, closeErr := procFindVolumeClose.Call(uintptr(findHandle))
+		if closed == 0 && returnErr == nil {
+			returnErr = fmt.Errorf("FindVolumeClose: %w", closeErr)
+		}
+	}()
 
 	for {
-		volName := windows.UTF16ToString(volumeName)
-
-		fmt.Println(volName)
-
-		hVol, err := windows.CreateFile(
-			windows.StringToUTF16Ptr(volName[:len(volName)-1]), // remove trailing '\'
+		volumeGUID := windows.UTF16ToString(volumeName)
+		if volumeGUID == "" {
+			return nil, fmt.Errorf("FindVolume returned an empty volume GUID")
+		}
+		fmt.Println(volumeGUID)
+		openName, err := windows.UTF16PtrFromString(strings.TrimSuffix(volumeGUID, "\\"))
+		if err != nil {
+			return nil, err
+		}
+		handle, err := windows.CreateFile(
+			openName,
 			windows.GENERIC_READ,
 			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 			nil,
@@ -134,82 +191,35 @@ func enumVolumeDiskOffset() ([]VolumeLetterAssign, error) {
 			0,
 			0,
 		)
-		if err == nil {
-			buffer := make([]byte, 1024)
-			buffer2 := make([]uint16, 1024)
-			var bytesReturned uint32
-
-			err := windows.DeviceIoControl(
-				hVol,
-				IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-				nil,
-				0,
-				&buffer[0],
-				uint32(len(buffer)),
-				&bytesReturned,
-				nil,
-			)
-			if err == nil {
-
-				extents := (*VOLUME_DISK_EXTENTS)(unsafe.Pointer(&buffer[0]))
-
-				for i := uint32(0); i < extents.NumberOfDiskExtents; i++ {
-					var returnLength uint32
-					extent := (*DISK_EXTENT)(unsafe.Pointer(
-						uintptr(unsafe.Pointer(&extents.Extents[0])) +
-							uintptr(i)*unsafe.Sizeof(DISK_EXTENT{}),
-					))
-
-					v := VolumeLetterAssign{
-						DiskNumber: int32(extent.DiskNumber),
-						Offset:     uint64(extent.StartingOffset),
-						Letters:    make([]string, 0),
-					}
-
-					r1, _, _ := procGetVolumePathNamesForVolumeW.Call(
-						uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(volName))),
-						uintptr(unsafe.Pointer(&buffer2[0])),
-						uintptr(len(buffer2)),
-						uintptr(unsafe.Pointer(&returnLength)),
-					)
-
-					if r1 == 0 {
-						return ret, nil
-					}
-
-					i := 0
-					for i < len(buffer) && buffer[i] != 0 {
-						start := i
-						for buffer[i] != 0 {
-							i++
-						}
-						path := windows.UTF16ToString(buffer2[start:i])
-						v.Letters = append(v.Letters, path)
-						i++
-					}
-
-					ret = append(ret, v)
-
-				}
-
-			} else {
-				fmt.Printf("%s : %s\n", volName, err.Error())
-			}
-
-			//checkVolumeExtents(hVol, volName, partitionOffset)
-			windows.CloseHandle(hVol)
+		if err != nil {
+			return nil, fmt.Errorf("CreateFile(%s): %w", volumeGUID, err)
 		}
+		extents, extentErr := getVolumeDiskExtents(handle, volumeGUID)
+		closeErr := windows.CloseHandle(handle)
+		if extentErr != nil {
+			return nil, extentErr
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("CloseHandle(%s): %w", volumeGUID, closeErr)
+		}
+		mountPaths, err := getVolumeMountPaths(volumeGUID)
+		if err != nil {
+			return nil, err
+		}
+		volumes = append(volumes, WindowsVolume{VolumeGUID: volumeGUID, MountPaths: mountPaths, Extents: extents})
 
-		ret, _, _ := procFindNextVolumeW.Call(
+		next, _, nextErr := procFindNextVolumeW.Call(
 			uintptr(findHandle),
 			uintptr(unsafe.Pointer(&volumeName[0])),
 			uintptr(len(volumeName)),
 		)
-		if ret == 0 {
-			break
+		if next == 0 {
+			if errors.Is(nextErr, windows.ERROR_NO_MORE_FILES) {
+				return volumes, nil
+			}
+			return nil, fmt.Errorf("FindNextVolumeW: %w", nextErr)
 		}
 	}
-	return ret, nil
 }
 
 func GetDiskLength(path string) (int64, error) {
@@ -288,115 +298,67 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 		return 0, err
 	}
 
-	vols, err := enumVolumeDiskOffset()
-	if err != nil {
-		dialog.Error(err.Error())
-		return 0, err
+	partitionEntriesOffset := uint64(unsafe.Offsetof(volumeDiskExtents.PartitionEntry))
+	partitionEntrySize := uint64(unsafe.Sizeof(volumeDiskExtents.PartitionEntry[0]))
+	if uint64(bytesReturned) < partitionEntriesOffset {
+		return 0, fmt.Errorf("drive layout response too short: %d", bytesReturned)
 	}
-	/*var exts VOLUME_DISK_EXTENTS
-	err = syscall.DeviceIoControl(
-		volumeHandle,
-		IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-		nil,
-		0,
-		(*byte)(unsafe.Pointer(&exts)),
-		uint32(unsafe.Sizeof(exts)),
-		&bytesReturned,
-		nil,
-	)
-
-	if err != nil {
-		dialog.Error(err.Error())
-		panic(err)
-	}*/
-
-	for i := 0; i < int(volumeDiskExtents.PartitionCount); i++ {
-		E := volumeDiskExtents.PartitionEntry[i]
-		if E.PartitionNumber == 0 {
-			continue //Windows API sometimes wrongly returns a partition that is effectively null, probably in case of MBR it is fixed 4 partitions anyway
-		}
-		fmt.Printf("Part: %d %s %s\n", E.PartitionNumber, BytesToString(int64(E.StartingOffset)), BytesToString(int64(E.PartitionLength)))
-		var letter string = ""
-		/*for x := 0; x < int(exts.NumberOfDiskExtents); x++ {
-			V := exts.Extents[x]
-			if V.StartingOffset == int64(E.StartingOffset) {
-				fmt.Printf("Found volume, need VSS")
-			}
-		}*/
-
-		for _, V := range vols {
-			if V.DiskNumber == int32(index) && V.Offset == E.StartingOffset {
-				if len(V.Letters) > 0 {
-					letter = V.Letters[0]
-				}
-
-			}
-		}
-
-		parts = append(parts, Partition{
-			StartByte:   uint64(E.StartingOffset),
-			EndByte:     uint64(E.StartingOffset + E.PartitionLength),
-			RequiresVSS: letter != "",
-			Skip:        false,
-			Letter:      letter,
-		})
+	if int(volumeDiskExtents.PartitionCount) > len(volumeDiskExtents.PartitionEntry) {
+		return 0, fmt.Errorf("partition count %d exceeds supported layout buffer", volumeDiskExtents.PartitionCount)
 	}
-
-	snapshot_paths := make([]string, 0)
-
-	for _, p := range parts {
-		if p.RequiresVSS {
-			snapshot_paths = append(snapshot_paths, fmt.Sprintf("%s:\\\\", p.Letter))
-		}
+	requiredLayoutBytes := partitionEntriesOffset + uint64(volumeDiskExtents.PartitionCount)*partitionEntrySize
+	if requiredLayoutBytes < partitionEntriesOffset || uint64(bytesReturned) < requiredLayoutBytes {
+		return 0, fmt.Errorf("drive layout count %d requires %d bytes, got %d", volumeDiskExtents.PartitionCount, requiredLayoutBytes, bytesReturned)
 	}
-
 	total, err := GetDiskLength(diskdev)
 	if err != nil {
 		return 0, err
 	}
+	if total < 0 {
+		return 0, fmt.Errorf("negative disk length %d", total)
+	}
+	volumes, err := enumWindowsVolumes()
+	if err != nil {
+		dialog.Error(err.Error())
+		return 0, err
+	}
+	partitionExtents := make([]DiskExtent, 0, volumeDiskExtents.PartitionCount)
+	for i := 0; i < int(volumeDiskExtents.PartitionCount); i++ {
+		entry := volumeDiskExtents.PartitionEntry[i]
+		if entry.PartitionNumber == 0 {
+			continue //Windows API sometimes wrongly returns a partition that is effectively null, probably in case of MBR it is fixed 4 partitions anyway
+		}
+		if entry.PartitionLength == 0 || entry.StartingOffset > ^uint64(0)-entry.PartitionLength {
+			return 0, fmt.Errorf("partition %d has invalid offset/length", entry.PartitionNumber)
+		}
+		fmt.Printf("Part: %d %s %s\n", entry.PartitionNumber, BytesToString(int64(entry.StartingOffset)), BytesToString(int64(entry.PartitionLength)))
+		partitionExtents = append(partitionExtents, DiskExtent{Start: entry.StartingOffset, End: entry.StartingOffset + entry.PartitionLength})
+	}
+	style := DiskLayoutMBR
+	if PARTITION_STYLE(volumeDiskExtents.PartitionStyle) == PartitionStyleGPT {
+		style = DiskLayoutGPT
+	} else if PARTITION_STYLE(volumeDiskExtents.PartitionStyle) != PartitionStyleMBR {
+		return 0, fmt.Errorf("unsupported Windows partition style %d", volumeDiskExtents.PartitionStyle)
+	}
+	plan, err := buildWindowsDiskPlan(uint64(total), style, uint32(index), partitionExtents, volumes)
+	if err != nil {
+		return 0, err
+	}
+	for _, segment := range plan {
+		parts = append(parts, Partition{StartByte: segment.Start, EndByte: segment.End, RequiresVSS: !segment.Raw, VSSSource: segment.VSSSource})
+	}
+	snapshotPaths, err := vssSourcesForPlan(plan)
+	if err != nil {
+		return 0, err
+	}
 
-	return total, snapshot.CreateVSSSnapshot(snapshot_paths, func(snapshots map[string]snapshot.SnapShot) error {
+	return total, snapshot.CreateVSSSnapshot(snapshotPaths, func(snapshots map[string]snapshot.SnapShot) error {
 
 		/*hostname, err := os.Hostname()
 		if err != nil {
 			fmt.Println("Failed to retrieve hostname:", err)
 			hostname = "unknown"
 		}*/
-
-		/*parts = append([]Partition{{
-			StartByte:   0,
-			EndByte:     parts[0].StartByte,
-			RequiresVSS: false,
-			Letter:      "",
-			Skip:        false,
-		}}, parts...)*/
-
-		newparts := make([]Partition, 0)
-		var curpos uint64 = 0
-		for _, P := range parts {
-			if P.StartByte != curpos { //Add a fake partition to backup raw data between
-				newparts = append(newparts, Partition{
-					StartByte:   curpos,
-					EndByte:     P.StartByte,
-					RequiresVSS: false,
-					Letter:      "",
-					Skip:        false,
-				})
-			}
-			newparts = append(newparts, P)
-			curpos = P.EndByte
-		}
-		if curpos < uint64(total) {
-			newparts = append(newparts, Partition{
-				StartByte:   curpos,
-				EndByte:     uint64(total),
-				RequiresVSS: false,
-				Letter:      "",
-				Skip:        false,
-			})
-		}
-
-		parts = newparts
 
 		fmt.Printf("%+v\n", parts)
 
@@ -452,9 +414,9 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 					continue
 				}
 
-				snapshot, ok := snapshots[partition.Letter+":\\"]
+				snapshot, ok := snapshots[partition.VSSSource]
 				if !ok {
-					return fmt.Errorf("cannot find snapshot for letter %s", partition.Letter)
+					return fmt.Errorf("cannot find snapshot for VSS source %s", partition.VSSSource)
 				}
 				snapshotPath := strings.TrimRight(snapshot.ObjectPath, "\\")
 				snapshotFile, err := os.Open(snapshotPath)

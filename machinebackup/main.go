@@ -54,7 +54,7 @@ type Partition struct {
 	EndByte     uint64
 	RequiresVSS bool
 	Skip        bool
-	Letter      string
+	VSSSource   string
 }
 
 // fixedIndexClient is the narrow PBS protocol surface used by the FIDX writer.

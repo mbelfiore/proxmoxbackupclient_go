@@ -27,14 +27,14 @@ Active core paths are Windows layout discovery, `GetDiskLength`, VSS acquisition
 3. `newchunk` is never incremented in the machine writer; `reusechunk` is local and not returned; `ChunkUploadStats` remains zero.
 4. Phase 2A now makes the machine-backup PBS API path fail closed on non-2xx responses and closes response bodies on both success and error paths; regression tests cover 400/401/403/500 and workflow termination.
 5. Phase 2A now enforces a configured SHA-256 certificate fingerprint even with self-signed or explicitly insecure connections; without a fingerprint, normal CA validation or explicit insecure mode remains unchanged.
-6. Windows mount-point enumeration appears to scan the disk-extent byte buffer instead of the UTF-16 mount-point buffer. Drive letters, directory mount points, and multi-extent volumes need a dedicated model and tests.
-7. Partition order, overlap, bounds, and arithmetic are not validated before acquisition. Upstream issue #72 must be treated as a possible corrupt source layout (partition beyond physical disk), distinct from a writer-generated overrun.
+6. Phase 2D replaces the broken mount-path/extent coupling with a tested `WindowsVolume` model preserving volume GUID, all mount paths, and all extents. Single-extent basic volumes with a drive-root VSS source are mapped explicitly; directory-only, no-mount, ambiguous, duplicate, and target multi-extent mappings fail closed.
+7. Phase 2D wires `DiskLayout` validation into Windows acquisition before raw-gap construction, ordering partitions and rejecting overlap, out-of-bounds ranges, and arithmetic overflow. Upstream issue #72 remains classified as possible source-layout corruption, distinct from writer overrun.
 8. The P2V blob is scaffolding: CPU/RAM/controller/firmware/storage identity are mostly static, SMBIOS/vmgenid are random, and bootability is not established.
 9. NBD is read-only but its cache synchronization, bounds checks, HTTP validation, index checksum verification, and chunk digest verification are incomplete.
 
 ## Integrity and P2V risk
 
-Phase 2A makes the PBS API fail closed and Phase 2B prevents FIDX finalization after pipeline failure. Remaining caller-level risks include unchecked return values outside the hardened writer path, such as some manifest/blob/finish calls in `machinebackup` main flow. The highest Windows acquisition risk is failure to associate a mounted volume with its partition, causing a live raw read. Multi-volume snapshots are created independently and no VSS writer state is evaluated, so application consistency is not established. Unsupported multi-extent/dynamic layouts need fail-closed handling.
+Phase 2A makes the PBS API fail closed and Phase 2B prevents FIDX finalization after pipeline failure. Remaining caller-level risks include unchecked return values outside the hardened writer path, such as some manifest/blob/finish calls in `machinebackup` main flow. Phase 2D prevents a discovered but unsupported or ambiguous Windows volume from silently becoming a live raw read; runtime Windows validation of enumeration remains required. Multi-volume VSS sets and writer state are not implemented, so application consistency is not established. Target multi-extent/dynamic layouts fail closed rather than being treated as a basic partition.
 
 A byte-correct disk image does not imply a bootable P2V result. BIOS/UEFI, EFI disk, Secure Boot, TPM, BitLocker, storage drivers, NIC identity, boot order, source Windows version, and stable machine identity are not modeled.
 
