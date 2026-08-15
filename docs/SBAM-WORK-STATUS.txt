@@ -1,0 +1,169 @@
+SBAM PBS AGENT - WORK STATUS
+============================
+
+DATA/FASE:
+2026-08-15 - FASE 2D WINDOWS VOLUME / MOUNT MAPPING + VSS SOURCE HARDENING.
+Enumerazione volume robusta, parsing mount/extents testabile e mapping partizione/VSS fail-closed.
+
+REPOSITORY:
+mbelfiore/proxmoxbackupclient_go
+
+BRANCH:
+Locale/Codex: work
+GitHub PR head: codex/locate-mbelfiore/proxmoxbackupclient_go
+
+PULL REQUEST:
+PR #1 - https://github.com/mbelfiore/proxmoxbackupclient_go/pull/1
+OPEN/DRAFT/non mergiata secondo lo stato remoto comunicato dall'utente.
+Nessuna pubblicazione remota dichiarata o eseguita da questo workspace.
+
+BASE COMMIT:
+519b62425a7da0ec137e7c86e17993c9bd409d59
+
+ULTIMO COMMIT:
+18d84049feeff02bbfcf499754203bcfc476c3fb snapshot locale consolidato prima della Fase 2D.
+Lo SHA finale Fase 2D è riportato nell'output Codex dopo il commit.
+
+ULTIMO COMMIT GITHUB:
+0d5326d29a709051aa6ba2ec65d09586a8ac5030 documentale, preceduto da 2ed4bc49fdbf9f8ec01ac42740895a9e3a73e3c tecnico, secondo verifica dell'utente.
+
+FILE MODIFICATI:
+- docs/SBAM-CORE-AUDIT.md
+- docs/SBAM-CORRECTNESS-PLAN.md
+- docs/SBAM-WORK-STATUS.txt
+- machinebackup/main.go
+- machinebackup/windows.go
+- machinebackup/windows_volume_model.go
+- machinebackup/windows_volume_model_test.go
+Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
+
+LAVORO ESEGUITO:
+- Sostituito il fragile errch per-worker con context condiviso, first-error protetto e WaitGroup.
+- Ogni worker produce un solo esito implicito; eliminato il doppio invio errore/nil.
+- Il primo errore critico cancella producer, dispatcher incorporato e lavoro non ancora iniziato.
+- uploadWorker attende producer e tutti gli otto worker prima di ritornare; ciò garantisce assenza di goroutine superstiti dopo il return, ma può ritardare il return se una I/O sottostante non è cancellabile.
+- Assignment e CloseFixedIndex non vengono eseguiti dopo errore, panic producer, cancellazione o overrun.
+- Introdotta blockProducer con emit cancellation-aware e proprietà chiara del channel jobs.
+- Errori di lettura producer vengono restituiti; panic producer sintetici vengono convertiti in errori.
+- File producer e PhysicalDrive reader vengono chiusi su cancellazione per interrompere letture dove supportato dall'OS.
+- Refactor producer Windows conserva raw gaps, VSS, padding, chunk 4 MiB e short final chunk.
+- Copiati i blocchi emessi dal buffer Windows per evitare mutazioni concorrenti dell'array sottostante.
+- Preservati digest/checksum ordinato, assignment fuori ordine, dedup e zero-block optimization.
+- Nessuna modifica a statistiche, VSS writer policy, P2V, NBD, GUI o telemetry.
+- Le sole API FIDX usate da machinebackup hanno ora varianti context-aware; i wrapper storici restano compatibili usando context.Background.
+- Create/upload/assign/close e download dell'indice precedente costruiscono request con NewRequestWithContext.
+- La cancellation della pipeline interrompe una richiesta fixed-chunk in-flight, verificata sia al server httptest sia dal workflow uploadWorker.
+- Il PhysicalDrive e il file snapshot VSS attualmente letti ricevono un close hook legato al context; ownership e chiusura normale restano nel producer.
+- Il TLS dial iniziale usa ora tls.Dialer.DialContext, senza timeout globale del client.
+- L'upgrade HTTP/1.1 verso il protocollo PBS è isolato in una funzione context-aware: cancellation chiude soltanto la connessione posseduta, sblocca write/read, preserva context.Canceled e chiude anche sui server error.
+- CancelIoEx NON è stato applicato cosmeticamente: le sorgenti sono aperte con os.Open e il percorso Go corrente usa handle/file I/O sincroni; CancelIoEx è definito per pending asynchronous I/O e os.File.Fd non è sicuro durante I/O concorrente. La Close già presente resta la misura prudente.
+- La risposta upgrade accetta soltanto una status line HTTP riconoscibile con codice numerico esattamente 101; risposte vuote, troncate, malformate o non-101 falliscono chiuse.
+- La risposta header upgrade è limitata a 64 KiB senza bufferizzare oltre il terminatore e senza leggere byte del successivo protocollo HTTP/2.
+- Una write parziale della richiesta upgrade restituisce io.ErrShortWrite e non avvia la lettura della risposta.
+- WindowsVolume separa VolumeGUID, MountPaths ed Extents; nessun mount path viene chiamato lettera.
+- Il MULTI_SZ UTF-16 viene letto dal buffer corretto usando returnLength, ridimensionato su buffer insufficiente e rifiutato se malformato.
+- VOLUME_DISK_EXTENTS viene acquisito con buffer variabile e interpretato con bounds/count/offset/length/overflow checks.
+- DiskLayout è ora usato dal percorso Windows per ordinare partizioni, validare bounds/overlap e costruire gap raw completi.
+- Il mapping supportato è single extent sul target, associato univocamente per offset e contenuto nei bounds della partizione.
+- Solo un drive-root mount verificabile è usato come sorgente VSS; directory-only e no-letter/no-mount vengono riconosciuti ma falliscono chiusi.
+- Un volume multi-extent che tocca il PhysicalDrive target è UNSUPPORTED e fallisce chiuso; nessun primo extent viene trattato come volume completo.
+- Nessuna modifica al package snapshot: go-vss riceve ancora un drive root, unica sorgente dimostrata compatibile con l'attuale wrapper.
+- Più sorgenti VSS sullo stesso disco falliscono prima di creare snapshot perché il wrapper corrente non supporta un set multi-volume coordinato.
+
+TEST PASSATI:
+- machinebackup success path byte-for-byte e checksum -> PASS
+- otto worker simultanei con barrier esplicita e lifecycle completo -> PASS
+- upload error su primo/intermedio/ultimo chunk -> PASS
+- cancellation del lavoro queued e nessuna finalizzazione -> PASS
+- producer returned error e producer panic recovery -> PASS
+- writer overrun fail-closed -> PASS
+- FIDX out-of-order senza time.Sleep -> PASS
+- go test -race -count=1 . (machinebackup) -> PASS
+- PhysicalDrive case-insensitive regression Fase 2A -> PASS
+- PBS HTTP/TLS/body lifecycle regression Fase 2A -> PASS
+- comandi finali di test/vet/build elencati nell'output Codex -> PASS
+- PBS request context cancellation osservata dal server httptest -> PASS
+- pipeline FIDX termina dopo cancellazione di upload PBS in-flight -> PASS
+- reader/closer sintetico bloccante sbloccato dalla Close su cancellation -> PASS
+- TLS handshake locale bloccato, cancellato via context e connessione peer chiusa -> PASS
+- upgrade PBS bloccato, cancellato via context e connessione peer chiusa -> PASS
+- upgrade pre-cancellato -> PASS
+- upgrade 101 normale e risposta server 401 -> PASS
+- status line malformata e status code non interpretabile -> PASS fail-closed
+- risposta upgrade vuota o troncata -> PASS fail-closed
+- header upgrade oltre 64 KiB -> PASS fail-closed
+- short write della richiesta upgrade -> PASS fail-closed
+- MULTI_SZ zero/uno/multiplo/directory/malformed -> PASS sintetico
+- extent single/multi/short/incoerente/overflow -> PASS sintetico
+- mapping single/raw-other-disk/duplicate/unknown/out-of-bounds -> PASS sintetico
+- directory-only/no-mount/multi-extent target -> PASS fail-closed sintetico
+- più sorgenti VSS -> PASS fail-closed prima degli effetti snapshot
+- partizioni unordered/overlap/past-disk -> PASS sintetico
+
+TEST FALLITI / WARNING:
+- Nessun test richiesto fallito.
+- I timeout nei test sono soltanto guardie anti-deadlock; l'ordine è controllato da channel/barrier.
+- Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
+- PBS NETWORK CANCELLATION: PASS per le operazioni FIDX percorse da machinebackup; nessun timeout globale arbitrario è stato introdotto.
+- HTTP/2 CONNECT CANCELLATION: IMPLEMENTED / PASS nei test locali sintetici per handshake, upgrade, pre-cancel, success e server error. Nessun timeout globale arbitrario è stato introdotto.
+- PBS UPGRADE STRICT FAIL-CLOSED: PASS per parsing status, limite header, short write e cleanup della connessione posseduta.
+- WINDOWS I/O CANCELLATION: WARNING / VALIDATION PENDING. La Close context-aware resta implementata per PhysicalDrive e snapshot VSS, ma nessuna garanzia CancelIoEx viene dichiarata sul corrente I/O sincrono. Una soluzione definitiva richiede apertura/lettura overlapped progettata esplicitamente oppure CancelSynchronousIo con ownership del thread, più runtime test Windows sicuri.
+- Questo ambiente Linux ha consentito soltanto cross-build Windows amd64, non runtime validation Windows.
+- VOLUME ENUMERATION: PASS logico/cross-build; WINDOWS RUNTIME VALIDATION PENDING.
+- MULTI_SZ MOUNT PATH PARSING: PASS sintetico.
+- SINGLE EXTENT MAPPING: PASS sintetico; runtime Windows pending.
+- MULTI EXTENT: UNSUPPORTED FAIL-CLOSED sul target.
+- DIRECTORY MOUNT: RECOGNIZED BUT FAIL-CLOSED se manca un drive-root source.
+- NO-LETTER VOLUME: RECOGNIZED BUT FAIL-CLOSED.
+- VSS SOURCE IDENTIFICATION: PASS per drive-root MVP; GUID/directory-only non dichiarati supportati.
+- Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
+
+BUG CONFERMATI ANCORA APERTI:
+- Garanzia Windows-specific dell'annullamento di I/O kernel-level pendente su disco/snapshot.
+- newchunk/reusechunk e ChunkUploadStats non completati.
+- VSS consistency multi-volume, writer state e cleanup da completare.
+- Runtime validation Windows di volume enumeration, mount paths ed extent resizing ancora pendente.
+- Directory-only/no-letter VSS source e multi-extent restano deliberatamente unsupported fail-closed.
+- Chiamate manifest/blob/finish ignorano ancora alcuni errori nel main caller.
+- P2V non pronto per produzione.
+- NBD hardening ancora aperto.
+
+BUG RISOLTI:
+- Propagazione errore worker senza doppio risultato errore/nil.
+- Cancellazione condivisa al primo errore critico.
+- Lifecycle producer/dispatcher/otto worker atteso prima del ritorno.
+- Blocco dei channel e goroutine orfane nei percorsi sintetici coperti.
+- Producer error propagation e conversione controllata dei panic producer.
+- Nessuna finalizzazione FIDX o falso successo dopo errore pipeline.
+- Cancellazione context-aware del TLS handshake e dell'upgrade PBS HTTP/2 custom.
+- Cleanup della connessione posseduta su cancellation, errore I/O e risposta server non-101.
+- Rifiuto esplicito di risposte upgrade malformate/troncate/sovradimensionate e write incomplete.
+- Bug buffer/buffer2 nel parsing mount path Windows.
+- Primo-extent-only e modello Letters sostituiti da identità/mount/extents separati.
+- Raw live-read silenziosa di volumi mappati ma privi di sorgente VSS supportata.
+
+IPOTESI / LAVORO ANCORA APERTO:
+- Statistiche logiche/compresse/trasmesse/riutilizzate.
+- Policy VSS application-consistent e supporto futuro per sorgenti senza drive root.
+- Readiness P2V e hardening NBD.
+- Verifica post-upload su PBS isolato in fase futura.
+
+OPERAZIONI VIETATE NON ESEGUITE:
+- Nessun PhysicalDrive reale.
+- Nessun backup reale.
+- Nessun restore reale.
+- Nessun merge su master.
+
+STATO FINALE:
+PASS CON WARNING nel workspace locale: parsing e mapping puri sono verificati e i casi ambigui falliscono chiusi; enumerazione/VSS richiedono runtime validation Windows. Pending kernel I/O resta WARNING. Non equivale a pubblicazione GitHub.
+
+PROSSIMO PASSO CONSIGLIATO:
+Eseguire runtime test Windows isolati per enumeration, resizing IOCTL e drive-root VSS source.
+Mantenere directory/no-letter e multi-extent fail-closed finché non esiste supporto dimostrato.
+Non confondere questa validazione con la futura policy VSS writer/multi-volume.
+
+ULTIME OPERAZIONI GIT:
+- 18d8404 stato iniziale locale consolidato fino alla Fase 2C.1
+- GitHub remoto comunicato: 0d5326d documentale sopra 2ed4bc4 tecnico
+- 519b624 base upstream originale
+- Dopo il commit Fase 2D il working tree deve contenere soltanto go.work.sum preesistente e non tracciato.
