@@ -29,8 +29,9 @@ Active core paths are Windows layout discovery, `GetDiskLength`, VSS acquisition
 5. Phase 2A now enforces a configured SHA-256 certificate fingerprint even with self-signed or explicitly insecure connections; without a fingerprint, normal CA validation or explicit insecure mode remains unchanged.
 6. Phase 2D replaces the broken mount-path/extent coupling with a tested `WindowsVolume` model preserving volume GUID, all mount paths, and all extents. Single-extent basic volumes with a drive-root VSS source are mapped explicitly; directory-only, no-mount, ambiguous, duplicate, and target multi-extent mappings fail closed.
 7. Phase 2D wires `DiskLayout` validation into Windows acquisition before raw-gap construction, ordering partitions and rejecting overlap, out-of-bounds ranges, and arithmetic overflow. Upstream issue #72 remains classified as possible source-layout corruption, distinct from writer overrun.
-8. The P2V blob is scaffolding: CPU/RAM/controller/firmware/storage identity are mostly static, SMBIOS/vmgenid are random, and bootability is not established.
-9. NBD is read-only but its cache synchronization, bounds checks, HTTP validation, index checksum verification, and chunk digest verification are incomplete.
+8. Phase 2D.1/2D.2 parses the native Windows amd64 partition union and rejects MBR LDM type `0x42`, MBR Storage Spaces protective types `0xD7`/`0xE7`, and the official GPT LDM and Storage Spaces protective GUIDs before volume enumeration or acquisition. These known identifiers fail closed; complete runtime characterization of Windows Storage Spaces topologies remains pending.
+9. The P2V blob is scaffolding: CPU/RAM/controller/firmware/storage identity are mostly static, SMBIOS/vmgenid are random, and bootability is not established.
+10. NBD is read-only but its cache synchronization, bounds checks, HTTP validation, index checksum verification, and chunk digest verification are incomplete.
 
 ## Integrity and P2V risk
 
@@ -48,7 +49,7 @@ Do not replace FIDX with DIDX; remove raw gaps; remove VSS padding; force every 
 2. Preserve offset-addressed fixed-index assignments; the official PBS implementation does not require monotonic arrival order.
 3. Make every protocol response explicit and fail closed.
 4. Preserve the Phase 2B structured cancellation and deterministic worker lifecycle while retaining parallel hash/compression/upload.
-5. Replace ad-hoc Windows discovery with a validated immutable disk plan. The current `DiskLayout` is only a synthetic, testable model for that future phase and is not connected to real Windows disk acquisition.
+5. Preserve the validated immutable Windows disk plan. Since Phase 2D, `DiskLayout` is used by production Windows acquisition for partition validation and raw-gap planning; its pure logic is covered synthetically while Windows IOCTL/VSS runtime validation remains pending.
 6. Add multi-volume VSS set/writer-state policy and guaranteed cleanup.
 7. Populate existing upstream statistics with distinct logical, compressed, transmitted, and reused measures.
 8. Separate canonical host imaging from optional P2V profile generation.

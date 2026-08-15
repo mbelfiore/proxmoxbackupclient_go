@@ -13,6 +13,78 @@ const (
 	volumeDiskExtentSize        = 24
 )
 
+// partitionInformationEX mirrors the Windows amd64 PARTITION_INFORMATION_EX
+// layout. PartitionInfo is the 112-byte MBR/GPT union at offset 32.
+type partitionInformationEX struct {
+	PartitionStyle     uint32
+	Reserved           [4]byte
+	StartingOffset     int64
+	PartitionLength    int64
+	PartitionNumber    uint32
+	RewritePartition   byte
+	IsServicePartition byte
+	Reserved2          [2]byte
+	PartitionInfo      [112]byte
+}
+
+type WindowsPartitionIdentity struct {
+	Style   DiskLayoutStyle
+	MBRType byte
+	GPTType [16]byte
+}
+
+const (
+	partitionLDMTypeMBR        byte = 0x42
+	partitionSpacesDataTypeMBR byte = 0xd7
+	partitionSpacesTypeMBR     byte = 0xe7
+)
+
+var (
+	// GUID fields are stored in native Windows memory order: the first three
+	// fields are little-endian, followed by the final eight bytes verbatim.
+	partitionLDMDataGUID     = [16]byte{0xa0, 0x60, 0x9b, 0xaf, 0x31, 0x14, 0x62, 0x4f, 0xbc, 0x68, 0x33, 0x11, 0x71, 0x4a, 0x69, 0xad}
+	partitionLDMMetadataGUID = [16]byte{0xaa, 0xc8, 0x08, 0x58, 0x8f, 0x7e, 0xe0, 0x42, 0x85, 0xd2, 0xe1, 0xe9, 0x04, 0x34, 0xcf, 0xb3}
+	partitionSpacesGUID      = [16]byte{0x8f, 0xaf, 0x5c, 0xe7, 0x80, 0xf6, 0xee, 0x4c, 0xaf, 0xa3, 0xb0, 0x01, 0xe5, 0x6e, 0xfc, 0x2d}
+	partitionSpacesDataGUID  = [16]byte{0xb4, 0xdc, 0xad, 0xe7, 0x34, 0xdc, 0x39, 0x45, 0x9a, 0x76, 0xeb, 0xbd, 0x07, 0xbe, 0x6f, 0x7e}
+)
+
+func partitionIdentity(entry partitionInformationEX) (WindowsPartitionIdentity, error) {
+	switch entry.PartitionStyle {
+	case 0:
+		return WindowsPartitionIdentity{Style: DiskLayoutMBR, MBRType: entry.PartitionInfo[0]}, nil
+	case 1:
+		identity := WindowsPartitionIdentity{Style: DiskLayoutGPT}
+		copy(identity.GPTType[:], entry.PartitionInfo[:16])
+		return identity, nil
+	default:
+		return WindowsPartitionIdentity{}, fmt.Errorf("unsupported partition style %d", entry.PartitionStyle)
+	}
+}
+
+func validateWindowsPartitionIdentities(identities []WindowsPartitionIdentity) error {
+	for i, identity := range identities {
+		switch identity.Style {
+		case DiskLayoutMBR:
+			switch identity.MBRType {
+			case partitionLDMTypeMBR:
+				return fmt.Errorf("partition %d uses unsupported MBR LDM type 0x42", i)
+			case partitionSpacesDataTypeMBR, partitionSpacesTypeMBR:
+				return fmt.Errorf("partition %d uses unsupported MBR Storage Spaces protective type 0x%02x", i, identity.MBRType)
+			}
+		case DiskLayoutGPT:
+			if identity.GPTType == partitionLDMDataGUID || identity.GPTType == partitionLDMMetadataGUID {
+				return fmt.Errorf("partition %d uses an unsupported GPT LDM partition type", i)
+			}
+			if identity.GPTType == partitionSpacesGUID || identity.GPTType == partitionSpacesDataGUID {
+				return fmt.Errorf("partition %d uses an unsupported GPT Storage Spaces protective partition type", i)
+			}
+		default:
+			return fmt.Errorf("partition %d has unsupported style %q", i, identity.Style)
+		}
+	}
+	return nil
+}
+
 type WindowsDiskExtent struct {
 	DiskNumber     uint32
 	StartingOffset uint64
@@ -136,6 +208,21 @@ func supportedVSSSource(volume WindowsVolume) (string, error) {
 	}
 	sort.Strings(driveRoots)
 	return driveRoots[0], nil
+}
+
+func buildValidatedWindowsDiskPlan(diskSize uint64, style DiskLayoutStyle, targetDisk uint32, partitions []DiskExtent, identities []WindowsPartitionIdentity, volumes []WindowsVolume) ([]WindowsDiskPlanSegment, error) {
+	if len(partitions) != len(identities) {
+		return nil, fmt.Errorf("partition geometry/identity count mismatch: %d/%d", len(partitions), len(identities))
+	}
+	for i, identity := range identities {
+		if identity.Style != style {
+			return nil, fmt.Errorf("partition %d style %q differs from disk style %q", i, identity.Style, style)
+		}
+	}
+	if err := validateWindowsPartitionIdentities(identities); err != nil {
+		return nil, err
+	}
+	return buildWindowsDiskPlan(diskSize, style, targetDisk, partitions, volumes)
 }
 
 func buildWindowsDiskPlan(diskSize uint64, style DiskLayoutStyle, targetDisk uint32, partitions []DiskExtent, volumes []WindowsVolume) ([]WindowsDiskPlanSegment, error) {
