@@ -2,40 +2,40 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-15 - FASE 2D.2 REVIEW FIX: STORAGE SPACES PROTECTIVE PARTITIONS FAIL-CLOSED.
-Classificazione degli identificatori protettivi Storage Spaces ufficiali prima di enumeration, piano, VSS, raw read o upload.
+2026-08-15 - FASE 2D / 2D.1 / 2D.2 REVIEWED CANONICAL STATE.
+Windows volume/mount mapping, Dynamic/LDM fail-closed e identificatori protettivi Storage Spaces noti sono stati revisionati e promossi sulla PR #1 canonica. La validazione runtime Windows resta una fase separata e pendente.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
 
-BRANCH:
-Locale/Codex: work
-GitHub PR head: codex/locate-mbelfiore/proxmoxbackupclient_go
+BRANCH / STATO REMOTO:
+Codex workspace locale: work
+PR #2 staging: codex/locate-mbelfiore/proxmoxbackupclient_go-6jqxlw
+PR #2 staging head verificata: 38b68d45d117e33d27c5923b7fd50a267311c8cd
+PR #1 canonica: codex/locate-mbelfiore/proxmoxbackupclient_go
+PR #1 canonica head dopo promozione tecnica: 2635d701a7c0f14a0036d6551339bdd95151f2ce
+master/base upstream: 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 PULL REQUEST:
-PR #2 è staging secondo lo stato comunicato dall'utente; PR #1 resta la linea canonica revisionata esternamente.
-Nessuna pubblicazione remota dichiarata o eseguita da questo workspace.
+PR #1 resta OPEN / DRAFT / NON MERGIATA ed è la linea canonica revisionata.
+PR #2 resta OPEN / NON MERGIATA ed è il ramo staging usato da Codex.
+Nessun merge su master è stato eseguito.
 
-BASE COMMIT:
-519b62425a7da0ec137e7c86e17993c9bd409d59
+ALLINEAMENTO 2D.2:
+Il commit Codex locale e670d0b9937bdb1416d3c5111288cd53ae55bb7d è stato pubblicato sulla PR #2 come 38b68d45d117e33d27c5923b7fd50a267311c8cd.
+Dopo review del diff remoto, il tree verificato 9126c11f3ad54823d31829abeaf948594371d0e5 è stato promosso sulla PR #1 con commit canonico 2635d701a7c0f14a0036d6551339bdd95151f2ce, parent 7ea991f3b5e8816c6212775721a6259fad47a9f6, usando fast-forward e senza force.
+Il tree iniziale della Fase 2D sulla PR #1 era identico al tree della PR #2 iniziale (21d997a466b3d25c8281e68afe13ef9da0d94ded), quindi la promozione 2D.1+2D.2 mantiene la linea canonica senza reintrodurre differenze estranee.
 
-ULTIMO COMMIT:
-8e7119356bb498ae1663dabaf0895dbdfa8800c6 stato locale consolidato prima della Fase 2D.2.
-Lo SHA finale Fase 2D.2 è riportato nell'output Codex dopo il commit.
-
-ULTIMO COMMIT GITHUB:
-2d82b9974700fad83cdaadf7569186da1e84e569 su PR #2 staging, secondo verifica dell'utente. Nessuna verifica o pubblicazione remota eseguita da questo workspace.
-
-FILE MODIFICATI:
+FILE MODIFICATI NEL DELTA CANONICO 2D.1 + 2D.2:
 - docs/SBAM-CORE-AUDIT.md
 - docs/SBAM-CORRECTNESS-PLAN.md
 - docs/SBAM-WORK-STATUS.txt
 - machinebackup/windows.go
 - machinebackup/windows_volume_model.go
 - machinebackup/windows_volume_model_test.go
-Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
+Nota workspace Codex: go.work.sum resta preesistente, non tracciato e non incluso nei commit tecnici.
 
-LAVORO ESEGUITO:
+LAVORO ESEGUITO FINO A 2D.2:
 - Sostituito il fragile errch per-worker con context condiviso, first-error protetto e WaitGroup.
 - Ogni worker produce un solo esito implicito; eliminato il doppio invio errore/nil.
 - Il primo errore critico cancella producer, dispatcher incorporato e lavoro non ancora iniziato.
@@ -48,31 +48,29 @@ LAVORO ESEGUITO:
 - Copiati i blocchi emessi dal buffer Windows per evitare mutazioni concorrenti dell'array sottostante.
 - Preservati digest/checksum ordinato, assignment fuori ordine, dedup e zero-block optimization.
 - Nessuna modifica a statistiche, VSS writer policy, P2V, NBD, GUI o telemetry.
-- Le sole API FIDX usate da machinebackup hanno ora varianti context-aware; i wrapper storici restano compatibili usando context.Background.
+- Le sole API FIDX usate da machinebackup hanno varianti context-aware; i wrapper storici restano compatibili usando context.Background.
 - Create/upload/assign/close e download dell'indice precedente costruiscono request con NewRequestWithContext.
 - La cancellation della pipeline interrompe una richiesta fixed-chunk in-flight, verificata sia al server httptest sia dal workflow uploadWorker.
 - Il PhysicalDrive e il file snapshot VSS attualmente letti ricevono un close hook legato al context; ownership e chiusura normale restano nel producer.
-- Il TLS dial iniziale usa ora tls.Dialer.DialContext, senza timeout globale del client.
-- L'upgrade HTTP/1.1 verso il protocollo PBS è isolato in una funzione context-aware: cancellation chiude soltanto la connessione posseduta, sblocca write/read, preserva context.Canceled e chiude anche sui server error.
-- CancelIoEx NON è stato applicato cosmeticamente: le sorgenti sono aperte con os.Open e il percorso Go corrente usa handle/file I/O sincroni; CancelIoEx è definito per pending asynchronous I/O e os.File.Fd non è sicuro durante I/O concorrente. La Close già presente resta la misura prudente.
+- Il TLS dial iniziale usa tls.Dialer.DialContext, senza timeout globale del client.
+- L'upgrade HTTP/1.1 verso il protocollo PBS è context-aware; cancellation chiude soltanto la connessione posseduta e preserva context.Canceled.
+- CancelIoEx NON è stato applicato cosmeticamente: il percorso Go corrente usa I/O sincrono; una soluzione definitiva richiede un disegno Windows-specific e runtime test sicuri.
 - La risposta upgrade accetta soltanto una status line HTTP riconoscibile con codice numerico esattamente 101; risposte vuote, troncate, malformate o non-101 falliscono chiuse.
-- La risposta header upgrade è limitata a 64 KiB senza bufferizzare oltre il terminatore e senza leggere byte del successivo protocollo HTTP/2.
-- Una write parziale della richiesta upgrade restituisce io.ErrShortWrite e non avvia la lettura della risposta.
+- La risposta header upgrade è limitata a 64 KiB e una write parziale restituisce io.ErrShortWrite.
 - WindowsVolume separa VolumeGUID, MountPaths ed Extents; nessun mount path viene chiamato lettera.
 - Il MULTI_SZ UTF-16 viene letto dal buffer corretto usando returnLength, ridimensionato su buffer insufficiente e rifiutato se malformato.
 - VOLUME_DISK_EXTENTS viene acquisito con buffer variabile e interpretato con bounds/count/offset/length/overflow checks.
-- DiskLayout è ora usato dal percorso Windows per ordinare partizioni, validare bounds/overlap e costruire gap raw completi.
+- DiskLayout è usato dal percorso Windows per ordinare partizioni, validare bounds/overlap e costruire gap raw completi.
 - Il mapping supportato è single extent sul target, associato univocamente per offset e contenuto nei bounds della partizione.
 - Solo un drive-root mount verificabile è usato come sorgente VSS; directory-only e no-letter/no-mount vengono riconosciuti ma falliscono chiusi.
-- Un volume multi-extent che tocca il PhysicalDrive target è UNSUPPORTED e fallisce chiuso; nessun primo extent viene trattato come volume completo.
-- Nessuna modifica al package snapshot: go-vss riceve ancora un drive root, unica sorgente dimostrata compatibile con l'attuale wrapper.
+- Un volume multi-extent che tocca il PhysicalDrive target è UNSUPPORTED e fallisce chiuso.
 - Più sorgenti VSS sullo stesso disco falliscono prima di creare snapshot perché il wrapper corrente non supporta un set multi-volume coordinato.
-- PARTITION_INFORMATION_EX usa ora il layout Windows amd64 verificato: style@0, LARGE_INTEGER offset@8/16, number@24, BOOLEAN@28/29 e union MBR/GPT da 112 byte@32, stride totale 144.
-- MBR partition type 0x42 e GPT LDM DATA/METADATA GUID vengono rifiutati prima di enumerare volumi o costruire il piano.
-- Un LDM single-extent non può più attraversare il percorso basic single-extent.
+- PARTITION_INFORMATION_EX usa il layout Windows amd64 verificato: style@0, LARGE_INTEGER offset@8/16, number@24, BOOLEAN@28/29 e union MBR/GPT da 112 byte@32, stride totale 144.
+- MBR type 0x42 e GPT LDM DATA/METADATA GUID vengono rifiutati prima di enumerare volumi o costruire il piano.
+- Un LDM single-extent non può attraversare il percorso basic single-extent.
 - MBR type 0xD7/0xE7 e GPT PARTITION_SPACES_GUID/PARTITION_SPACES_DATA_GUID vengono riconosciuti come partizioni protettive Storage Spaces unsupported e rifiutati nello stesso confine pre-acquisizione.
 
-TEST PASSATI:
+TEST / VERIFICHE PASSATI:
 - machinebackup success path byte-for-byte e checksum -> PASS
 - otto worker simultanei con barrier esplicita e lifecycle completo -> PASS
 - upload error su primo/intermedio/ultimo chunk -> PASS
@@ -83,7 +81,6 @@ TEST PASSATI:
 - go test -race -count=1 . (machinebackup) -> PASS
 - PhysicalDrive case-insensitive regression Fase 2A -> PASS
 - PBS HTTP/TLS/body lifecycle regression Fase 2A -> PASS
-- comandi finali di test/vet/build elencati nell'output Codex -> PASS
 - PBS request context cancellation osservata dal server httptest -> PASS
 - pipeline FIDX termina dopo cancellazione di upload PBS in-flight -> PASS
 - reader/closer sintetico bloccante sbloccato dalla Close su cancellation -> PASS
@@ -91,7 +88,7 @@ TEST PASSATI:
 - upgrade PBS bloccato, cancellato via context e connessione peer chiusa -> PASS
 - upgrade pre-cancellato -> PASS
 - upgrade 101 normale e risposta server 401 -> PASS
-- status line malformata e status code non interpretabile -> PASS fail-closed
+- status line malformata / non numerica -> PASS fail-closed
 - risposta upgrade vuota o troncata -> PASS fail-closed
 - header upgrade oltre 64 KiB -> PASS fail-closed
 - short write della richiesta upgrade -> PASS fail-closed
@@ -106,18 +103,15 @@ TEST PASSATI:
 - MBR 0x42, GPT LDM DATA e GPT LDM METADATA -> PASS fail-closed sintetico
 - single-extent LDM -> PASS fail-closed; ordinary basic single-extent resta PASS
 - MBR Storage Spaces 0xD7/0xE7 e GPT Spaces/Spaces Data -> PASS fail-closed sintetico
+- machinebackup/pbscommon test, race, vet, build e Windows amd64 cross-build riportati PASS da Codex per 2D.1 e 2D.2.
+- directorybackup/snapshot/nbd build richiesti riportati PASS da Codex.
+- git diff --check -> PASS.
+- nessun time.Sleep usato per orchestrazione dei test di concorrenza.
 
-TEST FALLITI / WARNING:
-- Nessun test richiesto fallito.
-- I timeout nei test sono soltanto guardie anti-deadlock; l'ordine è controllato da channel/barrier.
-- Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
-- PBS NETWORK CANCELLATION: PASS per le operazioni FIDX percorse da machinebackup; nessun timeout globale arbitrario è stato introdotto.
-- HTTP/2 CONNECT CANCELLATION: IMPLEMENTED / PASS nei test locali sintetici per handshake, upgrade, pre-cancel, success e server error. Nessun timeout globale arbitrario è stato introdotto.
-- PBS UPGRADE STRICT FAIL-CLOSED: PASS per parsing status, limite header, short write e cleanup della connessione posseduta.
-- WINDOWS I/O CANCELLATION: WARNING / VALIDATION PENDING. La Close context-aware resta implementata per PhysicalDrive e snapshot VSS, ma nessuna garanzia CancelIoEx viene dichiarata sul corrente I/O sincrono. Una soluzione definitiva richiede apertura/lettura overlapped progettata esplicitamente oppure CancelSynchronousIo con ownership del thread, più runtime test Windows sicuri.
-- Questo ambiente Linux ha consentito soltanto cross-build Windows amd64, non runtime validation Windows.
+WARNING / VALIDATION PENDING:
+- Nessun runtime test Windows reale è stato ancora eseguito per questa fase.
+- WINDOWS I/O CANCELLATION: WARNING / VALIDATION PENDING. La Close context-aware resta implementata per PhysicalDrive e snapshot VSS, ma nessuna garanzia universale di cancellazione kernel-level è dichiarata.
 - VOLUME ENUMERATION: PASS logico/cross-build; WINDOWS RUNTIME VALIDATION PENDING.
-- MULTI_SZ MOUNT PATH PARSING: PASS sintetico.
 - SINGLE EXTENT MAPPING: PASS sintetico; runtime Windows pending.
 - MULTI EXTENT: UNSUPPORTED FAIL-CLOSED sul target.
 - DIRECTORY MOUNT: RECOGNIZED BUT FAIL-CLOSED se manca un drive-root source.
@@ -125,58 +119,47 @@ TEST FALLITI / WARNING:
 - VSS SOURCE IDENTIFICATION: PASS per drive-root MVP; GUID/directory-only non dichiarati supportati.
 - DYNAMIC/LDM: UNSUPPORTED FAIL-CLOSED nei test sintetici; runtime Windows pending.
 - STORAGE SPACES KNOWN PROTECTIVE PARTITIONS: UNSUPPORTED / FAIL-CLOSED nei test sintetici per MBR 0xD7/0xE7 e GPT Spaces/Spaces Data ufficiali.
-- STORAGE SPACES RUNTIME/TOPOLOGIES: VALIDATION PENDING. Il riconoscimento degli identificatori noti non dimostra che ogni possibile configurazione Storage Spaces reale esponga tali identificatori nel percorso IOCTL corrente.
-- Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
-
-BUG CONFERMATI ANCORA APERTI:
-- Garanzia Windows-specific dell'annullamento di I/O kernel-level pendente su disco/snapshot.
+- STORAGE SPACES RUNTIME/TOPOLOGIES: VALIDATION PENDING. Il riconoscimento degli identificatori noti non dimostra che ogni configurazione Storage Spaces reale esponga tali identificatori nel percorso IOCTL corrente.
+- VSS multi-volume, writer state e cleanup restano fuori scope della 2D.x e ancora aperti.
 - newchunk/reusechunk e ChunkUploadStats non completati.
-- VSS consistency multi-volume, writer state e cleanup da completare.
-- Runtime validation Windows di volume enumeration, mount paths ed extent resizing ancora pendente.
-- Directory-only/no-letter VSS source e multi-extent restano deliberatamente unsupported fail-closed.
-- Runtime Windows e topologie Storage Spaces che non espongano gli identificatori protettivi noti non sono ancora caratterizzati.
 - Chiamate manifest/blob/finish ignorano ancora alcuni errori nel main caller.
 - P2V non pronto per produzione.
 - NBD hardening ancora aperto.
 
-BUG RISOLTI:
-- Propagazione errore worker senza doppio risultato errore/nil.
-- Cancellazione condivisa al primo errore critico.
-- Lifecycle producer/dispatcher/otto worker atteso prima del ritorno.
-- Blocco dei channel e goroutine orfane nei percorsi sintetici coperti.
-- Producer error propagation e conversione controllata dei panic producer.
-- Nessuna finalizzazione FIDX o falso successo dopo errore pipeline.
-- Cancellazione context-aware del TLS handshake e dell'upgrade PBS HTTP/2 custom.
-- Cleanup della connessione posseduta su cancellation, errore I/O e risposta server non-101.
-- Rifiuto esplicito di risposte upgrade malformate/troncate/sovradimensionate e write incomplete.
+BUG RISOLTI NEL BLOCCO 2D.x:
 - Bug buffer/buffer2 nel parsing mount path Windows.
 - Primo-extent-only e modello Letters sostituiti da identità/mount/extents separati.
 - Raw live-read silenziosa di volumi mappati ma privi di sorgente VSS supportata.
 - Accettazione silenziosa di partizioni LDM single-extent MBR/GPT.
 - Accettazione silenziosa degli identificatori protettivi Storage Spaces MBR/GPT ufficiali conosciuti.
 
-IPOTESI / LAVORO ANCORA APERTO:
-- Statistiche logiche/compresse/trasmesse/riutilizzate.
-- Policy VSS application-consistent e supporto futuro per sorgenti senza drive root.
-- Readiness P2V e hardening NBD.
-- Verifica post-upload su PBS isolato in fase futura.
+INVARIANTI PRESERVATI:
+- FIDX fixed-index offset-addressed; nessun ordinamento artificiale delle assegnazioni.
+- Chunk 4 MiB, short final chunk, checksum/digest, zero-block optimization e dedup invariati.
+- PBS HTTP/TLS/connect hardening invariato.
+- DiskLayout ordering/bounds/gap semantics invariati.
+- VSS padding storico invariato.
+- Nessun cambio a P2V/NBD/statistiche durante 2D.x.
 
-OPERAZIONI VIETATE NON ESEGUITE:
+OPERAZIONI NON ESEGUITE:
 - Nessun PhysicalDrive reale.
 - Nessun backup reale.
 - Nessun restore reale.
+- Nessuno snapshot VSS reale.
 - Nessun merge su master.
+- Nessun force-push.
 
-STATO FINALE:
-PASS CON WARNING nel workspace locale: Dynamic/LDM e identificatori protettivi Storage Spaces ufficiali conosciuti falliscono chiusi; topologie Storage Spaces reali, runtime enumeration/VSS e pending kernel I/O restano VALIDATION PENDING. Non equivale a pubblicazione GitHub.
+STATO FINALE BLOCCO 2D.x:
+CORRETTEZZA LOCALE / SINTETICA: PASS.
+COERENZA GLOBALE: PASS CON WARNING.
+La Fase 2D/2D.1/2D.2 è considerata PASS a livello di implementazione, code review, test sintetici e cross-build, ma NON equivale a produzione pronta.
+Restano obbligatori runtime validation Windows controllata, pending kernel I/O, topologie Storage Spaces reali e le future fasi VSS multi-volume/writer state.
 
 PROSSIMO PASSO CONSIGLIATO:
-Eseguire runtime test Windows isolati per enumeration, resizing IOCTL e drive-root VSS source.
-Mantenere directory/no-letter e multi-extent fail-closed finché non esiste supporto dimostrato.
-Non confondere questa validazione con la futura policy VSS writer/multi-volume.
+Preparare una fase separata di runtime validation Windows isolata e non distruttiva per enumeration volumi, resizing IOCTL, mapping basic single-extent e drive-root VSS source.
+Non eseguire ancora backup/restore di produzione e non confondere questa validazione con la futura VSS Coordinator / writer-state phase.
 
-ULTIME OPERAZIONI GIT:
-- 8e71193 stato iniziale locale consolidato fino alla Fase 2D.1
-- PR #2 staging a 2d82b99 secondo istruzione utente; PR #1 canonica non modificata; nessuna operazione remota eseguita
-- 519b624 base upstream originale
-- Dopo il commit Fase 2D.2 il working tree deve contenere soltanto go.work.sum preesistente e non tracciato.
+ULTIME OPERAZIONI GIT VERIFICATE:
+- PR #2 staging: 38b68d45d117e33d27c5923b7fd50a267311c8cd (2D.2 pubblicata, open, non mergiata).
+- PR #1 canonica: 2635d701a7c0f14a0036d6551339bdd95151f2ce (tree tecnico allineato a PR #2 dopo review, open/draft, non mergiata).
+- master/base: 519b62425a7da0ec137e7c86e17993c9bd409d59, non modificato.
