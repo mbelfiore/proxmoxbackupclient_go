@@ -34,7 +34,7 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | `reusechunk` | Incorrect metrics | Previous/in-job duplicate | Reuse count semantics documented | PLANNED | Distinguish prior vs same-job reuse if required |
 | `ChunkUploadStats` | Misleading manifest | Mixed compressed/reused data | Existing fields populated with verified semantics | PLANNED | No replacement stats structure |
 | `digests` | Apparently dead state | Forced reordered chunks | Establish historical/current purpose | PLANNED | Retain until fix design |
-| Volume/mount mapping | Live-read consistency | GUID, drive letter, directory mount, no mount | Correct volume-to-extent plan or fail closed | PLANNED | Requires Windows API adapter |
+| Volume/mount mapping | Live-read consistency | GUID, drive letter, directory mount, no mount | Correct volume-to-extent plan or fail closed | PASS | Phase 2D synthetic tests; Windows runtime validation pending |
 | VSS multi-volume | Cross-volume consistency | Two synthetic volumes | One policy-controlled snapshot set | PLANNED | Current library seam insufficient |
 | VSS writer state | Application consistency | Writer success/failure | Fail or downgrade per explicit policy | PLANNED | Not currently queried |
 | Snapshot cleanup | Leaked shadow copies | Callback success/error/panic | Release exactly once | PLANNED | Needs injectable snapshotter |
@@ -42,6 +42,7 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | Windows MULTI_SZ | Wrong mount source | Zero, drive root, directory, multiple, malformed | Preserve every path or reject malformed data | PASS | Pure Linux-runnable parser; Phase 2D |
 | Windows volume extents | Truncated/first-extent-only mapping | Single, multi, short, inconsistent, overflow | Parse bounded data; target multi-extent fails closed | PASS | Variable IOCTL buffer in production; Phase 2D |
 | Windows volume mapping | Live-read of mounted filesystem | Other disk, duplicate, unknown, directory-only, no-mount | Explicit VSS mapping or fail closed | PASS | Drive-root VSS source is the supported MVP |
+| Windows Dynamic/LDM | Silent acceptance of unsupported layout | MBR 0x42; GPT LDM data/metadata GUIDs; single extent | Reject before enumeration plan, VSS, raw read, or upload | PASS | Phase 2D.1 synthetic parsing/classification; Windows runtime pending |
 | Official PBS semantics | Non-monotonic fixed assignments | Official `fixed_append` and `fixed_writer_append_chunk` behavior | Digest is written at the position calculated from offset and size; monotonic arrival is not required | PASS | Verified separately against current PBS `src/api2/backup/mod.rs` and `environment.rs` |
 
 
@@ -57,6 +58,6 @@ The Phase 1 validation was run with module-specific commands rather than a repos
 
 No backup, restore, or real `PhysicalDrive` access was performed.
 
-## Synthetic DiskLayout boundary
+## DiskLayout production boundary
 
-`DiskLayout` is deliberately disconnected from the production Windows acquisition path. It is a synthetic, deterministic model used to specify ordering, overlap, bounds, MBR/GPT, and gap behavior for the future disk-layout validation phase. It does not inspect, validate, size, or acquire any real disk today.
+`DiskLayout` began as a synthetic deterministic model and is now used by the Phase 2D Windows acquisition path to order partitions, reject overlap/out-of-bounds layouts, and construct complete raw gaps before any read. Its logic is covered by Linux-runnable synthetic tests; Windows IOCTL enumeration and runtime VSS behavior remain separate validation-pending boundaries.

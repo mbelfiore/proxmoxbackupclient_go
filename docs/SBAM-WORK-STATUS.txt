@@ -2,8 +2,8 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-15 - FASE 2D WINDOWS VOLUME / MOUNT MAPPING + VSS SOURCE HARDENING.
-Enumerazione volume robusta, parsing mount/extents testabile e mapping partizione/VSS fail-closed.
+2026-08-15 - FASE 2D.1 REVIEW FIX: DYNAMIC/LDM FAIL-CLOSED + DOCUMENTATION COHERENCE.
+Classificazione nativa delle partizioni MBR/GPT e rifiuto LDM prima di enumeration, piano, VSS, raw read o upload.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
@@ -13,16 +13,15 @@ Locale/Codex: work
 GitHub PR head: codex/locate-mbelfiore/proxmoxbackupclient_go
 
 PULL REQUEST:
-PR #1 - https://github.com/mbelfiore/proxmoxbackupclient_go/pull/1
-OPEN/DRAFT/non mergiata secondo lo stato remoto comunicato dall'utente.
+PR #2 è staging secondo lo stato comunicato dall'utente; PR #1 resta la linea canonica revisionata esternamente.
 Nessuna pubblicazione remota dichiarata o eseguita da questo workspace.
 
 BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-18d84049feeff02bbfcf499754203bcfc476c3fb snapshot locale consolidato prima della Fase 2D.
-Lo SHA finale Fase 2D è riportato nell'output Codex dopo il commit.
+bcc827942af5ea6614fad70970a28103e2d0eb64 snapshot locale consolidato prima della Fase 2D.1.
+Lo SHA finale Fase 2D.1 è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
 0d5326d29a709051aa6ba2ec65d09586a8ac5030 documentale, preceduto da 2ed4bc49fdbf9f8ec01ac42740895a9e3a73e3c tecnico, secondo verifica dell'utente.
@@ -31,7 +30,6 @@ FILE MODIFICATI:
 - docs/SBAM-CORE-AUDIT.md
 - docs/SBAM-CORRECTNESS-PLAN.md
 - docs/SBAM-WORK-STATUS.txt
-- machinebackup/main.go
 - machinebackup/windows.go
 - machinebackup/windows_volume_model.go
 - machinebackup/windows_volume_model_test.go
@@ -69,6 +67,9 @@ LAVORO ESEGUITO:
 - Un volume multi-extent che tocca il PhysicalDrive target è UNSUPPORTED e fallisce chiuso; nessun primo extent viene trattato come volume completo.
 - Nessuna modifica al package snapshot: go-vss riceve ancora un drive root, unica sorgente dimostrata compatibile con l'attuale wrapper.
 - Più sorgenti VSS sullo stesso disco falliscono prima di creare snapshot perché il wrapper corrente non supporta un set multi-volume coordinato.
+- PARTITION_INFORMATION_EX usa ora il layout Windows amd64 verificato: style@0, LARGE_INTEGER offset@8/16, number@24, BOOLEAN@28/29 e union MBR/GPT da 112 byte@32, stride totale 144.
+- MBR partition type 0x42 e GPT LDM DATA/METADATA GUID vengono rifiutati prima di enumerare volumi o costruire il piano.
+- Un LDM single-extent non può più attraversare il percorso basic single-extent.
 
 TEST PASSATI:
 - machinebackup success path byte-for-byte e checksum -> PASS
@@ -99,6 +100,10 @@ TEST PASSATI:
 - directory-only/no-mount/multi-extent target -> PASS fail-closed sintetico
 - più sorgenti VSS -> PASS fail-closed prima degli effetti snapshot
 - partizioni unordered/overlap/past-disk -> PASS sintetico
+- layout/offset/size PARTITION_INFORMATION_EX amd64 -> PASS sintetico
+- basic MBR e basic GPT -> PASS sintetico
+- MBR 0x42, GPT LDM DATA e GPT LDM METADATA -> PASS fail-closed sintetico
+- single-extent LDM -> PASS fail-closed; ordinary basic single-extent resta PASS
 
 TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
@@ -116,6 +121,8 @@ TEST FALLITI / WARNING:
 - DIRECTORY MOUNT: RECOGNIZED BUT FAIL-CLOSED se manca un drive-root source.
 - NO-LETTER VOLUME: RECOGNIZED BUT FAIL-CLOSED.
 - VSS SOURCE IDENTIFICATION: PASS per drive-root MVP; GUID/directory-only non dichiarati supportati.
+- DYNAMIC/LDM: UNSUPPORTED FAIL-CLOSED nei test sintetici; runtime Windows pending.
+- STORAGE SPACES DETECTION: WARNING / RUNTIME VALIDATION PENDING. Nessuna euristica o GUID non verificato è stato introdotto; un layout Storage Spaces che non esponga un indicatore LDM/multi-extent riconosciuto non è dimostrato fail-closed.
 - Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
 
 BUG CONFERMATI ANCORA APERTI:
@@ -124,6 +131,7 @@ BUG CONFERMATI ANCORA APERTI:
 - VSS consistency multi-volume, writer state e cleanup da completare.
 - Runtime validation Windows di volume enumeration, mount paths ed extent resizing ancora pendente.
 - Directory-only/no-letter VSS source e multi-extent restano deliberatamente unsupported fail-closed.
+- Storage Spaces detection affidabile nel percorso IOCTL corrente non dimostrata.
 - Chiamate manifest/blob/finish ignorano ancora alcuni errori nel main caller.
 - P2V non pronto per produzione.
 - NBD hardening ancora aperto.
@@ -141,6 +149,7 @@ BUG RISOLTI:
 - Bug buffer/buffer2 nel parsing mount path Windows.
 - Primo-extent-only e modello Letters sostituiti da identità/mount/extents separati.
 - Raw live-read silenziosa di volumi mappati ma privi di sorgente VSS supportata.
+- Accettazione silenziosa di partizioni LDM single-extent MBR/GPT.
 
 IPOTESI / LAVORO ANCORA APERTO:
 - Statistiche logiche/compresse/trasmesse/riutilizzate.
@@ -155,7 +164,7 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun merge su master.
 
 STATO FINALE:
-PASS CON WARNING nel workspace locale: parsing e mapping puri sono verificati e i casi ambigui falliscono chiusi; enumerazione/VSS richiedono runtime validation Windows. Pending kernel I/O resta WARNING. Non equivale a pubblicazione GitHub.
+PASS CON WARNING nel workspace locale: Dynamic/LDM noti falliscono chiusi; Storage Spaces, runtime enumeration/VSS e pending kernel I/O restano VALIDATION PENDING. Non equivale a pubblicazione GitHub.
 
 PROSSIMO PASSO CONSIGLIATO:
 Eseguire runtime test Windows isolati per enumeration, resizing IOCTL e drive-root VSS source.
@@ -163,7 +172,7 @@ Mantenere directory/no-letter e multi-extent fail-closed finché non esiste supp
 Non confondere questa validazione con la futura policy VSS writer/multi-volume.
 
 ULTIME OPERAZIONI GIT:
-- 18d8404 stato iniziale locale consolidato fino alla Fase 2C.1
-- GitHub remoto comunicato: 0d5326d documentale sopra 2ed4bc4 tecnico
+- bcc8279 stato iniziale locale consolidato fino alla Fase 2D
+- PR #2 staging; PR #1 canonica secondo istruzione utente, nessuna modifica remota eseguita
 - 519b624 base upstream originale
-- Dopo il commit Fase 2D il working tree deve contenere soltanto go.work.sum preesistente e non tracciato.
+- Dopo il commit Fase 2D.1 il working tree deve contenere soltanto go.work.sum preesistente e non tracciato.

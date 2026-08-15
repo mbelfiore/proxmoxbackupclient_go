@@ -29,8 +29,9 @@ Active core paths are Windows layout discovery, `GetDiskLength`, VSS acquisition
 5. Phase 2A now enforces a configured SHA-256 certificate fingerprint even with self-signed or explicitly insecure connections; without a fingerprint, normal CA validation or explicit insecure mode remains unchanged.
 6. Phase 2D replaces the broken mount-path/extent coupling with a tested `WindowsVolume` model preserving volume GUID, all mount paths, and all extents. Single-extent basic volumes with a drive-root VSS source are mapped explicitly; directory-only, no-mount, ambiguous, duplicate, and target multi-extent mappings fail closed.
 7. Phase 2D wires `DiskLayout` validation into Windows acquisition before raw-gap construction, ordering partitions and rejecting overlap, out-of-bounds ranges, and arithmetic overflow. Upstream issue #72 remains classified as possible source-layout corruption, distinct from writer overrun.
-8. The P2V blob is scaffolding: CPU/RAM/controller/firmware/storage identity are mostly static, SMBIOS/vmgenid are random, and bootability is not established.
-9. NBD is read-only but its cache synchronization, bounds checks, HTTP validation, index checksum verification, and chunk digest verification are incomplete.
+8. Phase 2D.1 parses the native Windows amd64 partition union and rejects MBR type `0x42` plus GPT LDM data/metadata GUIDs before volume enumeration or acquisition. Storage Spaces detection is not yet demonstrated by the current IOCTL model and remains an explicit runtime-validation warning.
+9. The P2V blob is scaffolding: CPU/RAM/controller/firmware/storage identity are mostly static, SMBIOS/vmgenid are random, and bootability is not established.
+10. NBD is read-only but its cache synchronization, bounds checks, HTTP validation, index checksum verification, and chunk digest verification are incomplete.
 
 ## Integrity and P2V risk
 

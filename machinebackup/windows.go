@@ -36,32 +36,6 @@ type DRIVE_LAYOUT_INFORMATION_GPT struct {
 	DiskId windows.GUID
 }
 
-type PARTITION_INFORMATION_MBR struct {
-	PartitionType byte
-	BootIndicator byte
-	BootPartition byte
-}
-
-type PARTITION_INFORMATION_GPT struct {
-	Guid          windows.GUID
-	PartitionName [36]uint16
-}
-
-type PARTITION_INFORMATION_EX struct {
-	PartitionStyle     PARTITION_STYLE
-	Partitionordinal   uint16
-	StartingOffset     uint64
-	PartitionLength    uint64
-	PartitionNumber    uint32
-	RewritePartition   bool
-	IsServicePartition bool
-	Padding            [112]byte
-	/*DUMMYUNIONNAME     struct {
-		Mbr PARTITION_INFORMATION_MBR // 31
-		Gpt PARTITION_INFORMATION_GPT // 72
-	}*/
-}
-
 type GET_LENGTH_INFORMATION struct {
 	Length int64
 }
@@ -74,7 +48,7 @@ type DRIVE_LAYOUT_INFORMATION_EX struct {
 		Gpt DRIVE_LAYOUT_INFORMATION_GPT
 	}*/
 	PlaceHolder    [36]byte
-	PartitionEntry [128]PARTITION_INFORMATION_EX
+	PartitionEntry [128]partitionInformationEX
 }
 
 const IOCTL_DISK_GET_DRIVE_LAYOUT_EX = 0x00070050
@@ -317,22 +291,27 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 	if total < 0 {
 		return 0, fmt.Errorf("negative disk length %d", total)
 	}
-	volumes, err := enumWindowsVolumes()
-	if err != nil {
-		dialog.Error(err.Error())
-		return 0, err
-	}
 	partitionExtents := make([]DiskExtent, 0, volumeDiskExtents.PartitionCount)
+	partitionIdentities := make([]WindowsPartitionIdentity, 0, volumeDiskExtents.PartitionCount)
 	for i := 0; i < int(volumeDiskExtents.PartitionCount); i++ {
 		entry := volumeDiskExtents.PartitionEntry[i]
 		if entry.PartitionNumber == 0 {
 			continue //Windows API sometimes wrongly returns a partition that is effectively null, probably in case of MBR it is fixed 4 partitions anyway
 		}
-		if entry.PartitionLength == 0 || entry.StartingOffset > ^uint64(0)-entry.PartitionLength {
+		if entry.StartingOffset < 0 || entry.PartitionLength <= 0 {
 			return 0, fmt.Errorf("partition %d has invalid offset/length", entry.PartitionNumber)
 		}
-		fmt.Printf("Part: %d %s %s\n", entry.PartitionNumber, BytesToString(int64(entry.StartingOffset)), BytesToString(int64(entry.PartitionLength)))
-		partitionExtents = append(partitionExtents, DiskExtent{Start: entry.StartingOffset, End: entry.StartingOffset + entry.PartitionLength})
+		start, length := uint64(entry.StartingOffset), uint64(entry.PartitionLength)
+		if start > ^uint64(0)-length {
+			return 0, fmt.Errorf("partition %d offset/length overflows", entry.PartitionNumber)
+		}
+		identity, err := partitionIdentity(entry)
+		if err != nil {
+			return 0, fmt.Errorf("partition %d: %w", entry.PartitionNumber, err)
+		}
+		fmt.Printf("Part: %d %s %s\n", entry.PartitionNumber, BytesToString(entry.StartingOffset), BytesToString(entry.PartitionLength))
+		partitionExtents = append(partitionExtents, DiskExtent{Start: start, End: start + length})
+		partitionIdentities = append(partitionIdentities, identity)
 	}
 	style := DiskLayoutMBR
 	if PARTITION_STYLE(volumeDiskExtents.PartitionStyle) == PartitionStyleGPT {
@@ -340,7 +319,20 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 	} else if PARTITION_STYLE(volumeDiskExtents.PartitionStyle) != PartitionStyleMBR {
 		return 0, fmt.Errorf("unsupported Windows partition style %d", volumeDiskExtents.PartitionStyle)
 	}
-	plan, err := buildWindowsDiskPlan(uint64(total), style, uint32(index), partitionExtents, volumes)
+	if err := validateWindowsPartitionIdentities(partitionIdentities); err != nil {
+		return 0, err
+	}
+	for i, identity := range partitionIdentities {
+		if identity.Style != style {
+			return 0, fmt.Errorf("partition %d style %q differs from disk style %q", i, identity.Style, style)
+		}
+	}
+	volumes, err := enumWindowsVolumes()
+	if err != nil {
+		dialog.Error(err.Error())
+		return 0, err
+	}
+	plan, err := buildValidatedWindowsDiskPlan(uint64(total), style, uint32(index), partitionExtents, partitionIdentities, volumes)
 	if err != nil {
 		return 0, err
 	}

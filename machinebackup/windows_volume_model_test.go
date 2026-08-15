@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf16"
+	"unsafe"
 )
 
 func multiSZ(values ...string) []uint16 {
@@ -14,6 +15,80 @@ func multiSZ(values ...string) []uint16 {
 		out = append(out, 0)
 	}
 	return append(out, 0)
+}
+
+func TestPartitionInformationEXLayoutAMD64(t *testing.T) {
+	var entry partitionInformationEX
+	if got := unsafe.Sizeof(entry); got != 144 {
+		t.Fatalf("PARTITION_INFORMATION_EX size=%d want=144", got)
+	}
+	checks := []struct {
+		name string
+		got  uintptr
+		want uintptr
+	}{
+		{"style", unsafe.Offsetof(entry.PartitionStyle), 0},
+		{"starting offset", unsafe.Offsetof(entry.StartingOffset), 8},
+		{"partition length", unsafe.Offsetof(entry.PartitionLength), 16},
+		{"partition number", unsafe.Offsetof(entry.PartitionNumber), 24},
+		{"rewrite", unsafe.Offsetof(entry.RewritePartition), 28},
+		{"service", unsafe.Offsetof(entry.IsServicePartition), 29},
+		{"union", unsafe.Offsetof(entry.PartitionInfo), 32},
+	}
+	for _, check := range checks {
+		if check.got != check.want {
+			t.Errorf("%s offset=%d want=%d", check.name, check.got, check.want)
+		}
+	}
+}
+
+func TestDynamicPartitionClassification(t *testing.T) {
+	basicGPT := [16]byte{0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44, 0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7}
+	tests := []struct {
+		name     string
+		identity WindowsPartitionIdentity
+		wantErr  bool
+	}{
+		{"basic MBR", WindowsPartitionIdentity{Style: DiskLayoutMBR, MBRType: 0x07}, false},
+		{"basic GPT", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: basicGPT}, false},
+		{"MBR LDM", WindowsPartitionIdentity{Style: DiskLayoutMBR, MBRType: 0x42}, true},
+		{"GPT LDM data", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: partitionLDMDataGUID}, true},
+		{"GPT LDM metadata", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: partitionLDMMetadataGUID}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateWindowsPartitionIdentities([]WindowsPartitionIdentity{tc.identity})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v wantError=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestPartitionIdentityReadsNativeUnion(t *testing.T) {
+	mbr := partitionInformationEX{PartitionStyle: 0}
+	mbr.PartitionInfo[0] = partitionLDMTypeMBR
+	identity, err := partitionIdentity(mbr)
+	if err != nil || identity.Style != DiskLayoutMBR || identity.MBRType != partitionLDMTypeMBR {
+		t.Fatalf("MBR identity=%+v error=%v", identity, err)
+	}
+	gpt := partitionInformationEX{PartitionStyle: 1}
+	copy(gpt.PartitionInfo[:16], partitionLDMDataGUID[:])
+	identity, err = partitionIdentity(gpt)
+	if err != nil || identity.Style != DiskLayoutGPT || identity.GPTType != partitionLDMDataGUID {
+		t.Fatalf("GPT identity=%+v error=%v", identity, err)
+	}
+}
+
+func TestSingleExtentLDMFailsBeforeDiskPlan(t *testing.T) {
+	partitions := []DiskExtent{{Start: 100, End: 200}}
+	volume := WindowsVolume{VolumeGUID: "ldm", MountPaths: []string{`C:\`}, Extents: []WindowsDiskExtent{{DiskNumber: 0, StartingOffset: 100, Length: 100}}}
+	if _, err := buildValidatedWindowsDiskPlan(300, DiskLayoutMBR, 0, partitions, []WindowsPartitionIdentity{{Style: DiskLayoutMBR, MBRType: 0x42}}, []WindowsVolume{volume}); err == nil {
+		t.Fatal("single-extent LDM partition must fail before plan construction")
+	}
+	if _, err := buildValidatedWindowsDiskPlan(300, DiskLayoutMBR, 0, partitions, []WindowsPartitionIdentity{{Style: DiskLayoutMBR, MBRType: 0x07}}, []WindowsVolume{volume}); err != nil {
+		t.Fatalf("ordinary single-extent basic volume rejected: %v", err)
+	}
 }
 
 func TestParseUTF16MultiSZ(t *testing.T) {
