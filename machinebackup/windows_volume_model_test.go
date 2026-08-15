@@ -52,8 +52,12 @@ func TestDynamicPartitionClassification(t *testing.T) {
 		{"basic MBR", WindowsPartitionIdentity{Style: DiskLayoutMBR, MBRType: 0x07}, false},
 		{"basic GPT", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: basicGPT}, false},
 		{"MBR LDM", WindowsPartitionIdentity{Style: DiskLayoutMBR, MBRType: 0x42}, true},
+		{"MBR Storage Spaces data", WindowsPartitionIdentity{Style: DiskLayoutMBR, MBRType: 0xd7}, true},
+		{"MBR Storage Spaces", WindowsPartitionIdentity{Style: DiskLayoutMBR, MBRType: 0xe7}, true},
 		{"GPT LDM data", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: partitionLDMDataGUID}, true},
 		{"GPT LDM metadata", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: partitionLDMMetadataGUID}, true},
+		{"GPT Storage Spaces", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: partitionSpacesGUID}, true},
+		{"GPT Storage Spaces data", WindowsPartitionIdentity{Style: DiskLayoutGPT, GPTType: partitionSpacesDataGUID}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

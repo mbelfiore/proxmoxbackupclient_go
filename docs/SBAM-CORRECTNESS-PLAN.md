@@ -43,6 +43,7 @@ Status values: **PASS** means implemented and passing locally; **CHARACTERIZED**
 | Windows volume extents | Truncated/first-extent-only mapping | Single, multi, short, inconsistent, overflow | Parse bounded data; target multi-extent fails closed | PASS | Variable IOCTL buffer in production; Phase 2D |
 | Windows volume mapping | Live-read of mounted filesystem | Other disk, duplicate, unknown, directory-only, no-mount | Explicit VSS mapping or fail closed | PASS | Drive-root VSS source is the supported MVP |
 | Windows Dynamic/LDM | Silent acceptance of unsupported layout | MBR 0x42; GPT LDM data/metadata GUIDs; single extent | Reject before enumeration plan, VSS, raw read, or upload | PASS | Phase 2D.1 synthetic parsing/classification; Windows runtime pending |
+| Windows Storage Spaces identifiers | Silent acceptance of known unsupported protective partitions | MBR 0xD7/0xE7; GPT Spaces/Spaces Data GUIDs | Reject before enumeration plan, VSS, raw read, or upload | PASS | Phase 2D.2 synthetic classification; real Storage Spaces topology/runtime validation pending |
 | Official PBS semantics | Non-monotonic fixed assignments | Official `fixed_append` and `fixed_writer_append_chunk` behavior | Digest is written at the position calculated from offset and size; monotonic arrival is not required | PASS | Verified separately against current PBS `src/api2/backup/mod.rs` and `environment.rs` |
 
 
