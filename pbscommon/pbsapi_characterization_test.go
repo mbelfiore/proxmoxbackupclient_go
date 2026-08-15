@@ -143,6 +143,11 @@ func TestPBSUpgradeSuccessAndServerError(t *testing.T) {
 	}{
 		{name: "success", response: "HTTP/1.1 101 Switching Protocols\r\n\r\n"},
 		{name: "server error", response: "HTTP/1.1 401 Unauthorized\r\n\r\n", wantErr: true},
+		{name: "malformed status line", response: "MALFORMED\r\n\r\n", wantErr: true},
+		{name: "invalid status code", response: "HTTP/1.1 nope Invalid\r\n\r\n", wantErr: true},
+		{name: "empty response", response: "", wantErr: true},
+		{name: "truncated response", response: "HTTP/1.1 101 Switching", wantErr: true},
+		{name: "oversized header", response: "HTTP/1.1 101 Switching Protocols\r\nX-Fill: " + strings.Repeat("x", maxPBSUpgradeHeaderSize), wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
@@ -170,6 +175,24 @@ func TestPBSUpgradeSuccessAndServerError(t *testing.T) {
 			}
 			_ = conn.Close()
 		})
+	}
+}
+
+type shortWriteConn struct {
+	net.Conn
+}
+
+func (c shortWriteConn) Write(data []byte) (int, error) {
+	return len(data) - 1, nil
+}
+
+func TestPBSUpgradeRejectsShortWrite(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	pbs := &PBSClient{Manifest: BackupManifest{BackupTime: 1, BackupType: "host", BackupID: "test"}}
+	conn, err := pbs.upgradePBSConnection(context.Background(), shortWriteConn{Conn: clientConn}, false)
+	if conn != nil || !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("conn=%v error=%v, want nil io.ErrShortWrite", conn, err)
 	}
 }
 

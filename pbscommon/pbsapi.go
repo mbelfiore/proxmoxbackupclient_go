@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,10 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/net/http2"
 )
+
+// PBS upgrade responses contain only a small HTTP/1.1 header. Keep a generous
+// 64 KiB ceiling while preventing an unbounded response from consuming memory.
+const maxPBSUpgradeHeaderSize = 64 * 1024
 
 type IndexCreateResp struct {
 	WriterID int `json:"data"`
@@ -635,11 +640,15 @@ func (pbs *PBSClient) upgradePBSConnection(ctx context.Context, conn net.Conn, r
 		"Authorization: " + fmt.Sprintf("PBSAPIToken=%s:%s", pbs.AuthID, pbs.Secret) + "\r\n" +
 		"Upgrade: " + upgrade + "\r\n" +
 		"Connection: Upgrade\r\n\r\n"
-	if _, err := io.WriteString(conn, request); err != nil {
+	written, err := io.WriteString(conn, request)
+	if err != nil {
 		if ctxErr := context.Cause(ctx); ctxErr != nil {
 			return nil, ctxErr
 		}
 		return nil, err
+	}
+	if written != len(request) {
+		return nil, io.ErrShortWrite
 	}
 
 	fmt.Printf("Reading response to upgrade...\n")
@@ -658,15 +667,30 @@ func (pbs *PBSClient) upgradePBSConnection(ctx context.Context, conn net.Conn, r
 			return nil, err
 		}
 		buf = append(buf, byteBuffer[:bytesRead]...)
-	}
-	lines := strings.Split(string(buf), "\n")
-	if len(lines) > 0 {
-		tokens := strings.Split(lines[0], " ")
-		if len(tokens) > 1 && tokens[1] != "101" {
-			fmt.Println("Unexpected response code: " + strings.Join(tokens[1:], " "))
-			fmt.Println(string(buf))
-			return nil, &AuthErr{}
+		terminated := strings.HasSuffix(string(buf), "\r\n\r\n") || strings.HasSuffix(string(buf), "\n\n")
+		if len(buf) > maxPBSUpgradeHeaderSize || (len(buf) == maxPBSUpgradeHeaderSize && !terminated) {
+			return nil, fmt.Errorf("PBS upgrade response header exceeds %d bytes", maxPBSUpgradeHeaderSize)
 		}
+	}
+	statusLine := strings.TrimSuffix(strings.SplitN(string(buf), "\n", 2)[0], "\r")
+	tokens := strings.SplitN(statusLine, " ", 3)
+	if len(tokens) < 2 {
+		return nil, fmt.Errorf("malformed PBS upgrade HTTP status line")
+	}
+	if _, _, ok := http.ParseHTTPVersion(tokens[0]); !ok {
+		return nil, fmt.Errorf("malformed PBS upgrade HTTP version")
+	}
+	if len(tokens[1]) != 3 {
+		return nil, fmt.Errorf("malformed PBS upgrade HTTP status code")
+	}
+	statusCode, err := strconv.Atoi(tokens[1])
+	if err != nil || statusCode < 100 || statusCode > 999 {
+		return nil, fmt.Errorf("malformed PBS upgrade HTTP status code")
+	}
+	if statusCode != http.StatusSwitchingProtocols {
+		fmt.Println("Unexpected response code: " + strings.Join(tokens[1:], " "))
+		fmt.Println(string(buf))
+		return nil, &AuthErr{}
 	}
 	if !stopCancel() {
 		if err := context.Cause(ctx); err != nil {

@@ -2,8 +2,8 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-14 - FASE 2C WINDOWS BLOCKING I/O + HTTP/2 CONNECT CANCELLATION HARDENING.
-Hardening del TLS dial e dell'upgrade PBS; valutazione fail-closed di CancelIoEx sul percorso Windows corrente.
+2026-08-15 - FASE 2C.1 REVIEW FIX: PBS UPGRADE STRICT FAIL-CLOSED.
+Validazione rigorosa della risposta upgrade, limite header e rilevamento short write senza modificare FIDX o Windows/VSS.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
@@ -14,19 +14,18 @@ GitHub PR head: codex/locate-mbelfiore/proxmoxbackupclient_go
 
 PULL REQUEST:
 PR #1 - https://github.com/mbelfiore/proxmoxbackupclient_go/pull/1
-Draft: sì, secondo lo stato remoto comunicato dall'utente.
-GitHub head iniziale verificato dall'utente: 77e05cbd6e480c5c7e6bc12d6ea3aac0280bccb2.
+La Fase 2C risulta pubblicata secondo lo stato comunicato dall'utente; Draft/SHA remoto corrente non sono stati verificati autonomamente da questo ambiente.
 Nessuna pubblicazione remota dichiarata o eseguita da questo workspace.
 
 BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-37680b3 snapshot locale consolidato Fasi 1, 2A, 2B e 2B.1 prima della Fase 2C.
-Lo SHA finale Fase 2C è riportato nell'output Codex dopo il commit.
+43f86c8 snapshot locale consolidato fino alla Fase 2C prima della review fix 2C.1.
+Lo SHA finale Fase 2C.1 è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
-77e05cbd6e480c5c7e6bc12d6ea3aac0280bccb2, comunicato e verificato dall'utente prima della Fase 2B.
+Fase 2C pubblicata secondo l'utente; SHA remoto corrente non verificabile da questo workspace.
 
 FILE MODIFICATI:
 - docs/SBAM-WORK-STATUS.txt
@@ -55,6 +54,9 @@ LAVORO ESEGUITO:
 - Il TLS dial iniziale usa ora tls.Dialer.DialContext, senza timeout globale del client.
 - L'upgrade HTTP/1.1 verso il protocollo PBS è isolato in una funzione context-aware: cancellation chiude soltanto la connessione posseduta, sblocca write/read, preserva context.Canceled e chiude anche sui server error.
 - CancelIoEx NON è stato applicato cosmeticamente: le sorgenti sono aperte con os.Open e il percorso Go corrente usa handle/file I/O sincroni; CancelIoEx è definito per pending asynchronous I/O e os.File.Fd non è sicuro durante I/O concorrente. La Close già presente resta la misura prudente.
+- La risposta upgrade accetta soltanto una status line HTTP riconoscibile con codice numerico esattamente 101; risposte vuote, troncate, malformate o non-101 falliscono chiuse.
+- La risposta header upgrade è limitata a 64 KiB senza bufferizzare oltre il terminatore e senza leggere byte del successivo protocollo HTTP/2.
+- Una write parziale della richiesta upgrade restituisce io.ErrShortWrite e non avvia la lettura della risposta.
 
 TEST PASSATI:
 - machinebackup success path byte-for-byte e checksum -> PASS
@@ -75,6 +77,10 @@ TEST PASSATI:
 - upgrade PBS bloccato, cancellato via context e connessione peer chiusa -> PASS
 - upgrade pre-cancellato -> PASS
 - upgrade 101 normale e risposta server 401 -> PASS
+- status line malformata e status code non interpretabile -> PASS fail-closed
+- risposta upgrade vuota o troncata -> PASS fail-closed
+- header upgrade oltre 64 KiB -> PASS fail-closed
+- short write della richiesta upgrade -> PASS fail-closed
 
 TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
@@ -82,6 +88,7 @@ TEST FALLITI / WARNING:
 - Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
 - PBS NETWORK CANCELLATION: PASS per le operazioni FIDX percorse da machinebackup; nessun timeout globale arbitrario è stato introdotto.
 - HTTP/2 CONNECT CANCELLATION: IMPLEMENTED / PASS nei test locali sintetici per handshake, upgrade, pre-cancel, success e server error. Nessun timeout globale arbitrario è stato introdotto.
+- PBS UPGRADE STRICT FAIL-CLOSED: PASS per parsing status, limite header, short write e cleanup della connessione posseduta.
 - WINDOWS I/O CANCELLATION: WARNING / VALIDATION PENDING. La Close context-aware resta implementata per PhysicalDrive e snapshot VSS, ma nessuna garanzia CancelIoEx viene dichiarata sul corrente I/O sincrono. Una soluzione definitiva richiede apertura/lettura overlapped progettata esplicitamente oppure CancelSynchronousIo con ownership del thread, più runtime test Windows sicuri.
 - Questo ambiente Linux ha consentito soltanto cross-build Windows amd64, non runtime validation Windows.
 - Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
@@ -105,6 +112,7 @@ BUG RISOLTI:
 - Nessuna finalizzazione FIDX o falso successo dopo errore pipeline.
 - Cancellazione context-aware del TLS handshake e dell'upgrade PBS HTTP/2 custom.
 - Cleanup della connessione posseduta su cancellation, errore I/O e risposta server non-101.
+- Rifiuto esplicito di risposte upgrade malformate/troncate/sovradimensionate e write incomplete.
 
 IPOTESI / LAVORO ANCORA APERTO:
 - Statistiche logiche/compresse/trasmesse/riutilizzate.
@@ -120,7 +128,7 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun merge su master.
 
 STATO FINALE:
-PASS CON WARNING nel workspace locale: HTTP/2 Connect cancellation è verificata; Windows pending kernel I/O resta VALIDATION PENDING e non viene falsamente dichiarato risolto. Non equivale a pubblicazione GitHub.
+PASS CON WARNING nel workspace locale: review fix PBS upgrade verificata; Windows pending kernel I/O resta VALIDATION PENDING e non viene falsamente dichiarato risolto. Non equivale a pubblicazione GitHub.
 
 PROSSIMO PASSO CONSIGLIATO:
 Prototipare I/O Windows overlapped scoped agli handle SBAM in un ambiente Windows isolato.
@@ -128,7 +136,7 @@ Validare runtime CancelIoEx/ERROR_NOT_FOUND e completamento I/O prima di sostitu
 Successivamente completare statistiche usando ChunkUploadStats upstream esistente.
 
 ULTIME OPERAZIONI GIT:
-- 37680b3 stato iniziale locale consolidato Fasi 1-2B.1
-- 77e05cb stato GitHub iniziale comunicato dall'utente
+- 43f86c8 stato iniziale locale consolidato fino alla Fase 2C
+- GitHub: Fase 2C pubblicata secondo l'utente; nessun push Fase 2C.1 eseguito
 - 519b624 base upstream originale
-- Dopo il commit Fase 2C il working tree contiene soltanto go.work.sum preesistente e non tracciato.
+- Dopo il commit Fase 2C.1 il working tree contiene soltanto go.work.sum preesistente e non tracciato.
