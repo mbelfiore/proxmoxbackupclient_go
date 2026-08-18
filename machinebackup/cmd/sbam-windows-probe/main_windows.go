@@ -100,10 +100,12 @@ func enumerateVolumes(visit func(probeVolume) error) (returnErr error) {
 			return err
 		}
 		extents, err := volumeDiskExtents(guid)
+		extentError := ""
 		if err != nil {
-			return err
+			extents = nil
+			extentError = err.Error()
 		}
-		if err := visit(probeVolume{GUID: guid, MountPaths: mountPaths, Extents: extents}); err != nil {
+		if err := visit(probeVolume{GUID: guid, MountPaths: mountPaths, Extents: extents, ExtentError: extentError}); err != nil {
 			return err
 		}
 

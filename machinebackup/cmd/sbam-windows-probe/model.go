@@ -38,6 +38,7 @@ type probeVolume struct {
 	GUID             string
 	MountPaths       []string
 	Extents          []probeExtent
+	ExtentError      string
 	GUIDSupport      supportResult
 	DriveRootSupport map[string]supportResult
 }
@@ -137,6 +138,7 @@ func writeVolumeReport(output io.Writer, volume probeVolume) {
 		fmt.Fprintf(output, "MOUNT_%d_KIND=%s\n", i, classifyMountPath(path))
 	}
 	fmt.Fprintf(output, "EXTENT_COUNT=%d\n", len(volume.Extents))
+	fmt.Fprintf(output, "EXTENT_ERROR=%s\n", volume.ExtentError)
 	for i, extent := range volume.Extents {
 		fmt.Fprintf(output, "EXTENT_%d_DISK=%d\n", i, extent.DiskNumber)
 		fmt.Fprintf(output, "EXTENT_%d_OFFSET=%d\n", i, extent.StartingOffset)

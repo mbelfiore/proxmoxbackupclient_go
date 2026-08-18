@@ -78,12 +78,36 @@ func TestWriteVolumeReportPreservesGUIDAndReportsNoMount(t *testing.T) {
 		"MOUNT_COUNT=0",
 		"MOUNT_KIND=NO_MOUNT",
 		"EXTENT_COUNT=1",
+		"EXTENT_ERROR=\n",
 		"EXTENT_0_DISK=2",
 		"VSS_VOLUME_GUID_SUPPORTED=true",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("report missing %q:\n%s", expected, text)
 		}
+	}
+}
+
+func TestWriteVolumeReportPreservesExtentErrorWithoutInventingExtents(t *testing.T) {
+	volume := probeVolume{
+		GUID:        `\\?\Volume{12345678-1234-1234-1234-123456789abc}\`,
+		ExtentError: `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: The device is not ready.`,
+		GUIDSupport: supportResult{Supported: true},
+	}
+	var output bytes.Buffer
+	writeVolumeReport(&output, volume)
+	text := output.String()
+	for _, expected := range []string{
+		"EXTENT_COUNT=0",
+		"EXTENT_ERROR=IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: The device is not ready.",
+		"VSS_VOLUME_GUID_SUPPORTED=true",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("report missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "EXTENT_0_") {
+		t.Fatalf("report invented an extent:\n%s", text)
 	}
 }
 
