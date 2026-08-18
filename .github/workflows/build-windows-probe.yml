@@ -1,0 +1,50 @@
+name: Build Windows Probe
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: machinebackup/go.mod
+          cache-dependency-path: machinebackup/go.sum
+
+      - name: Test probe package
+        working-directory: machinebackup
+        run: go test -count=1 ./cmd/sbam-windows-probe
+
+      - name: Build Windows amd64 probe
+        working-directory: machinebackup
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p ../out
+          go build -trimpath -o ../out/sbam-windows-probe.exe ./cmd/sbam-windows-probe
+
+      - name: Record SHA256
+        run: sha256sum out/sbam-windows-probe.exe | tee out/sbam-windows-probe.exe.sha256
+
+      - name: Upload probe artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbam-windows-probe-2d3a
+          path: |
+            out/sbam-windows-probe.exe
+            out/sbam-windows-probe.exe.sha256
+          if-no-files-found: error
+          retention-days: 7
