@@ -2,8 +2,8 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-15 - FASE 2D.2 REVIEW FIX: STORAGE SPACES PROTECTIVE PARTITIONS FAIL-CLOSED.
-Classificazione degli identificatori protettivi Storage Spaces ufficiali prima di enumeration, piano, VSS, raw read o upload.
+2026-08-18 - FASE 2D.3A WINDOWS RUNTIME PROBE / NO-MOUNT VOLUME GUID VSS VALIDATION.
+Probe Windows amd64 read-only preparato; esecuzione runtime sul LAB e conclusione su Volume GUID VSS ancora PENDING.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
@@ -20,19 +20,20 @@ BASE COMMIT:
 519b62425a7da0ec137e7c86e17993c9bd409d59
 
 ULTIMO COMMIT:
-8e7119356bb498ae1663dabaf0895dbdfa8800c6 stato locale consolidato prima della Fase 2D.2.
-Lo SHA finale Fase 2D.2 è riportato nell'output Codex dopo il commit.
+c50181bce92fa22b25069e67f748e79c768bf232 stato locale consolidato prima della Fase 2D.3A.
+Lo SHA finale Fase 2D.3A è riportato nell'output Codex dopo il commit.
 
 ULTIMO COMMIT GITHUB:
 2d82b9974700fad83cdaadf7569186da1e84e569 su PR #2 staging, secondo verifica dell'utente. Nessuna verifica o pubblicazione remota eseguita da questo workspace.
 
 FILE MODIFICATI:
-- docs/SBAM-CORE-AUDIT.md
-- docs/SBAM-CORRECTNESS-PLAN.md
+- machinebackup/cmd/sbam-windows-probe/main_windows.go
+- machinebackup/cmd/sbam-windows-probe/main_nonwindows.go
+- machinebackup/cmd/sbam-windows-probe/model.go
+- machinebackup/cmd/sbam-windows-probe/model_test.go
+- machinebackup/go.mod
+- machinebackup/go.sum
 - docs/SBAM-WORK-STATUS.txt
-- machinebackup/windows.go
-- machinebackup/windows_volume_model.go
-- machinebackup/windows_volume_model_test.go
 Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
 
 LAVORO ESEGUITO:
@@ -71,6 +72,9 @@ LAVORO ESEGUITO:
 - MBR partition type 0x42 e GPT LDM DATA/METADATA GUID vengono rifiutati prima di enumerare volumi o costruire il piano.
 - Un LDM single-extent non può più attraversare il percorso basic single-extent.
 - MBR type 0xD7/0xE7 e GPT PARTITION_SPACES_GUID/PARTITION_SPACES_DATA_GUID vengono riconosciuti come partizioni protettive Storage Spaces unsupported e rifiutati nello stesso confine pre-acquisizione.
+- Preparato sbam-windows-probe.exe: enumera Volume GUID, mount path ed extents dei soli volumi e interroga IVssBackupComponents::IsVolumeSupported sul GUID completo e separatamente sui drive root.
+- Il probe inizializza VSS soltanto quanto necessario alla query di supporto e rilascia direttamente IVssBackupComponents; non avvia o crea snapshot.
+- supportedVSSSource, buildWindowsDiskPlan, backupWindowsDisk e CreateVSSSnapshot restano invariati: nessuna conclusione produttiva viene anticipata prima dell'evidenza runtime.
 
 TEST PASSATI:
 - machinebackup success path byte-for-byte e checksum -> PASS
@@ -106,6 +110,8 @@ TEST PASSATI:
 - MBR 0x42, GPT LDM DATA e GPT LDM METADATA -> PASS fail-closed sintetico
 - single-extent LDM -> PASS fail-closed; ordinary basic single-extent resta PASS
 - MBR Storage Spaces 0xD7/0xE7 e GPT Spaces/Spaces Data -> PASS fail-closed sintetico
+- logica pura probe: mount classification, trailing backslash, MULTI_SZ, extents e report -> PASS Linux
+- probe Windows amd64 cross-build -> PASS; RUNTIME EXECUTION NOT PERFORMED
 
 TEST FALLITI / WARNING:
 - Nessun test richiesto fallito.
@@ -126,6 +132,7 @@ TEST FALLITI / WARNING:
 - DYNAMIC/LDM: UNSUPPORTED FAIL-CLOSED nei test sintetici; runtime Windows pending.
 - STORAGE SPACES KNOWN PROTECTIVE PARTITIONS: UNSUPPORTED / FAIL-CLOSED nei test sintetici per MBR 0xD7/0xE7 e GPT Spaces/Spaces Data ufficiali.
 - STORAGE SPACES RUNTIME/TOPOLOGIES: VALIDATION PENDING. Il riconoscimento degli identificatori noti non dimostra che ogni possibile configurazione Storage Spaces reale esponga tali identificatori nel percorso IOCTL corrente.
+- NO-MOUNT VOLUME GUID VSS SUPPORT: RUNTIME VALIDATION PENDING. Il probe è compilato ma non è stato eseguito sul Windows Server 2019 LAB BACKPREALTEST.
 - Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
 
 BUG CONFERMATI ANCORA APERTI:
@@ -166,9 +173,10 @@ OPERAZIONI VIETATE NON ESEGUITE:
 - Nessun backup reale.
 - Nessun restore reale.
 - Nessun merge su master.
+- Nessuna creazione snapshot VSS reale e nessuna esecuzione del probe su hardware reale.
 
 STATO FINALE:
-PASS CON WARNING nel workspace locale: Dynamic/LDM e identificatori protettivi Storage Spaces ufficiali conosciuti falliscono chiusi; topologie Storage Spaces reali, runtime enumeration/VSS e pending kernel I/O restano VALIDATION PENDING. Non equivale a pubblicazione GitHub.
+PASS CON WARNING nel workspace locale: probe read-only compilato e logica pura testata; supporto VSS del Volume GUID no-mount, topologie Storage Spaces reali, runtime enumeration/VSS e pending kernel I/O restano VALIDATION PENDING. Non equivale a pubblicazione GitHub né a PASS runtime 2D.3A.
 
 PROSSIMO PASSO CONSIGLIATO:
 Eseguire runtime test Windows isolati per enumeration, resizing IOCTL e drive-root VSS source.
@@ -176,7 +184,7 @@ Mantenere directory/no-letter e multi-extent fail-closed finché non esiste supp
 Non confondere questa validazione con la futura policy VSS writer/multi-volume.
 
 ULTIME OPERAZIONI GIT:
-- 8e71193 stato iniziale locale consolidato fino alla Fase 2D.1
-- PR #2 staging a 2d82b99 secondo istruzione utente; PR #1 canonica non modificata; nessuna operazione remota eseguita
+- c50181b stato iniziale locale consolidato fino alla Fase 2D.2
+- PR #2 staging a 38b68d4 e PR #1 canonica a da790c8 secondo istruzione utente; nessuna operazione remota eseguita
 - 519b624 base upstream originale
-- Dopo il commit Fase 2D.2 il working tree deve contenere soltanto go.work.sum preesistente e non tracciato.
+- Dopo il commit Fase 2D.3A il working tree deve contenere soltanto go.work.sum preesistente e non tracciato; l'EXE di test resta fuori dal repository in /tmp.
