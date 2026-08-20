@@ -193,6 +193,27 @@ func classifyWindowsMountPath(path string) WindowsMountKind {
 	return WindowsOtherMount
 }
 
+func isCanonicalWindowsVolumeGUIDRoot(path string) bool {
+	const prefix = `\\?\Volume{`
+	const suffix = `}\`
+	if len(path) != len(prefix)+36+len(suffix) || path[:len(prefix)] != prefix || path[len(path)-len(suffix):] != suffix {
+		return false
+	}
+	guid := path[len(prefix) : len(path)-len(suffix)]
+	for i, char := range guid {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if char != '-' {
+				return false
+			}
+			continue
+		}
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 func supportedVSSSource(volume WindowsVolume) (string, error) {
 	driveRoots := make([]string, 0)
 	for _, path := range volume.MountPaths {
@@ -202,6 +223,9 @@ func supportedVSSSource(volume WindowsVolume) (string, error) {
 	}
 	if len(driveRoots) == 0 {
 		if len(volume.MountPaths) == 0 {
+			if isCanonicalWindowsVolumeGUIDRoot(volume.VolumeGUID) {
+				return volume.VolumeGUID, nil
+			}
 			return "", fmt.Errorf("volume %s has no mount path and no verified VSS source", volume.VolumeGUID)
 		}
 		return "", fmt.Errorf("volume %s has no supported drive-root VSS source", volume.VolumeGUID)

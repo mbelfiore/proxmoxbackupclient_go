@@ -58,10 +58,10 @@ func CreateVSSSnapshot(paths []string, backup_callback func(sn map[string]SnapSh
 	snapshots := make(map[string]SnapShot)
 
 	for _, path := range paths {
-		path, _ = filepath.Abs(path)
-		volName := filepath.VolumeName(path)
-		volName += "\\"
-		subPath := path[len(volName):] //Strp C:\, 3 chars or whatever it is
+		path, volName, subPath, err := prepareSnapshotSource(path, filepath.Abs, filepath.VolumeName)
+		if err != nil {
+			return err
+		}
 
 		appDataFolder, err := getAppDataFolder()
 		if err != nil {

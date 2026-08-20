@@ -223,6 +223,47 @@ func TestClassifyWindowsMountPath(t *testing.T) {
 	}
 }
 
+func TestSupportedVSSSourceVolumeGUIDFallback(t *testing.T) {
+	guid := `\\?\Volume{3a886445-0000-0000-0000-100000000000}\`
+	tests := []struct {
+		name   string
+		volume WindowsVolume
+		want   string
+		err    bool
+	}{
+		{"no mount canonical GUID", WindowsVolume{VolumeGUID: guid}, guid, false},
+		{"drive root remains preferred", WindowsVolume{VolumeGUID: guid, MountPaths: []string{`D:\`}}, `D:\`, false},
+		{"directory mount does not use GUID", WindowsVolume{VolumeGUID: guid, MountPaths: []string{`D:\Mount\System\`}}, "", true},
+		{"no mount empty GUID", WindowsVolume{}, "", true},
+		{"no mount missing trailing slash", WindowsVolume{VolumeGUID: `\\?\Volume{3a886445-0000-0000-0000-100000000000}`}, "", true},
+		{"no mount truncated GUID", WindowsVolume{VolumeGUID: `\\?\Volume{3a886445-0000-0000-0000-10000000000}\`}, "", true},
+		{"no mount non-hex GUID", WindowsVolume{VolumeGUID: `\\?\Volume{3a886445-0000-0000-0000-10000000000g}\`}, "", true},
+		{"no mount text after root", WindowsVolume{VolumeGUID: guid + `child`}, "", true},
+		{"empty braces", WindowsVolume{VolumeGUID: `\\?\Volume{}\`}, "", true},
+		{"drive root is not GUID", WindowsVolume{VolumeGUID: `C:\`}, "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := supportedVSSSource(tc.volume)
+			if (err != nil) != tc.err || got != tc.want {
+				t.Fatalf("source=%q error=%v, want %q error=%v", got, err, tc.want, tc.err)
+			}
+		})
+	}
+}
+
+func TestBuildWindowsDiskPlanNoMountVolumeGUID(t *testing.T) {
+	guid := `\\?\Volume{3a886445-0000-0000-0000-100000000000}\`
+	volume := WindowsVolume{VolumeGUID: guid, Extents: []WindowsDiskExtent{{DiskNumber: 0, StartingOffset: 100, Length: 100}}}
+	plan, err := buildWindowsDiskPlan(300, DiskLayoutGPT, 0, []DiskExtent{{Start: 100, End: 200}}, []WindowsVolume{volume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 3 || plan[1].Raw || plan[1].VSSSource != guid {
+		t.Fatalf("unexpected no-mount plan: %+v", plan)
+	}
+}
+
 func TestVSSSourcesForPlanFailsClosedForMultipleVolumes(t *testing.T) {
 	plan := []WindowsDiskPlanSegment{
 		{Start: 0, End: 10, VSSSource: `C:\`},
