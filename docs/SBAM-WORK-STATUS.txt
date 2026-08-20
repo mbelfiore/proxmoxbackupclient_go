@@ -2,189 +2,152 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-18 - FASE 2D.3A WINDOWS RUNTIME PROBE / NO-MOUNT VOLUME GUID VSS VALIDATION.
-Probe Windows amd64 read-only preparato; esecuzione runtime sul LAB e conclusione su Volume GUID VSS ancora PENDING.
+2026-08-20 - FASE 2D.3B CONSOLIDATA / PREPARAZIONE FASE 2E MULTI-VOLUME VSS.
+
+OBIETTIVO FINALE:
+Costruire un client Windows per il backup di server fisici direttamente su Proxmox Backup Server, preservando compatibilita con restore file, restore fisico e futuro Rapid P2V.
+PBS resta responsabile di datastore, chunk, FIDX, deduplica, retention, prune, verify e sync.
+SBAM PBS Agent resta responsabile di inventario Windows, VSS, dischi/layout/boot metadata e orchestrazione backup/restore.
 
 REPOSITORY:
 mbelfiore/proxmoxbackupclient_go
 
-BRANCH:
-Locale/Codex: work
-GitHub PR head: codex/locate-mbelfiore/proxmoxbackupclient_go
+BASE UPSTREAM NEL NOSTRO FORK:
+master = 519b62425a7da0ec137e7c86e17993c9bd409d59
+Master non e stato modificato o mergiato durante le fasi 2D.3A/2D.3B.
 
-PULL REQUEST:
-PR #2 è staging secondo lo stato comunicato dall'utente; PR #1 resta la linea canonica revisionata esternamente.
-Nessuna pubblicazione remota dichiarata o eseguita da questo workspace.
+BRANCH DI LAVORO GITHUB:
+codex/locate-mbelfiore/proxmoxbackupclient_go-6jqxlw
 
-BASE COMMIT:
-519b62425a7da0ec137e7c86e17993c9bd409d59
+WORKSPACE CODEX:
+Il branch locale Codex puo chiamarsi semplicemente work. Il nome locale work e normale e NON deve essere confrontato con il nome della branch GitHub.
+La precondizione importante per un nuovo task Codex e l'HEAD esatto della branch di lavoro pubblicata.
 
-ULTIMO COMMIT:
-c50181bce92fa22b25069e67f748e79c768bf232 stato locale consolidato prima della Fase 2D.3A.
-Lo SHA finale Fase 2D.3A è riportato nell'output Codex dopo il commit.
+STATO GIT PUBBLICATO PRIMA DI QUESTA REVISIONE DOCUMENTALE:
+2D.3B codice pubblicato su GitHub al commit:
+6ad5497be864dfab5b7ed97446c16f50c3c17cc2 - Support no-mount Volume GUID VSS sources
 
-ULTIMO COMMIT GITHUB:
-2d82b9974700fad83cdaadf7569186da1e84e569 su PR #2 staging, secondo verifica dell'utente. Nessuna verifica o pubblicazione remota eseguita da questo workspace.
+Il commit 2D.3B contiene esclusivamente:
+- machinebackup/windows_volume_model.go
+- machinebackup/windows_volume_model_test.go
+- snapshot/snapshot_common.go
+- snapshot/snapshot_common_test.go
+- snapshot/win_snapshot.go
 
-FILE MODIFICATI:
-- machinebackup/cmd/sbam-windows-probe/main_windows.go
-- machinebackup/cmd/sbam-windows-probe/main_nonwindows.go
-- machinebackup/cmd/sbam-windows-probe/model.go
-- machinebackup/cmd/sbam-windows-probe/model_test.go
-- machinebackup/go.mod
-- machinebackup/go.sum
-- docs/SBAM-WORK-STATUS.txt
-Nota: go.work.sum resta preesistente, non tracciato e non incluso nel commit.
+Nessun merge su master.
+Nessun force-push.
+Nessuna nuova PR creata per 2D.3B.
 
-LAVORO ESEGUITO:
-- Sostituito il fragile errch per-worker con context condiviso, first-error protetto e WaitGroup.
-- Ogni worker produce un solo esito implicito; eliminato il doppio invio errore/nil.
-- Il primo errore critico cancella producer, dispatcher incorporato e lavoro non ancora iniziato.
-- uploadWorker attende producer e tutti gli otto worker prima di ritornare; ciò garantisce assenza di goroutine superstiti dopo il return, ma può ritardare il return se una I/O sottostante non è cancellabile.
-- Assignment e CloseFixedIndex non vengono eseguiti dopo errore, panic producer, cancellazione o overrun.
-- Introdotta blockProducer con emit cancellation-aware e proprietà chiara del channel jobs.
-- Errori di lettura producer vengono restituiti; panic producer sintetici vengono convertiti in errori.
-- File producer e PhysicalDrive reader vengono chiusi su cancellazione per interrompere letture dove supportato dall'OS.
-- Refactor producer Windows conserva raw gaps, VSS, padding, chunk 4 MiB e short final chunk.
-- Copiati i blocchi emessi dal buffer Windows per evitare mutazioni concorrenti dell'array sottostante.
-- Preservati digest/checksum ordinato, assignment fuori ordine, dedup e zero-block optimization.
-- Nessuna modifica a statistiche, VSS writer policy, P2V, NBD, GUI o telemetry.
-- Le sole API FIDX usate da machinebackup hanno ora varianti context-aware; i wrapper storici restano compatibili usando context.Background.
-- Create/upload/assign/close e download dell'indice precedente costruiscono request con NewRequestWithContext.
-- La cancellation della pipeline interrompe una richiesta fixed-chunk in-flight, verificata sia al server httptest sia dal workflow uploadWorker.
-- Il PhysicalDrive e il file snapshot VSS attualmente letti ricevono un close hook legato al context; ownership e chiusura normale restano nel producer.
-- Il TLS dial iniziale usa ora tls.Dialer.DialContext, senza timeout globale del client.
-- L'upgrade HTTP/1.1 verso il protocollo PBS è isolato in una funzione context-aware: cancellation chiude soltanto la connessione posseduta, sblocca write/read, preserva context.Canceled e chiude anche sui server error.
-- CancelIoEx NON è stato applicato cosmeticamente: le sorgenti sono aperte con os.Open e il percorso Go corrente usa handle/file I/O sincroni; CancelIoEx è definito per pending asynchronous I/O e os.File.Fd non è sicuro durante I/O concorrente. La Close già presente resta la misura prudente.
-- La risposta upgrade accetta soltanto una status line HTTP riconoscibile con codice numerico esattamente 101; risposte vuote, troncate, malformate o non-101 falliscono chiuse.
-- La risposta header upgrade è limitata a 64 KiB senza bufferizzare oltre il terminatore e senza leggere byte del successivo protocollo HTTP/2.
-- Una write parziale della richiesta upgrade restituisce io.ErrShortWrite e non avvia la lettura della risposta.
-- WindowsVolume separa VolumeGUID, MountPaths ed Extents; nessun mount path viene chiamato lettera.
-- Il MULTI_SZ UTF-16 viene letto dal buffer corretto usando returnLength, ridimensionato su buffer insufficiente e rifiutato se malformato.
-- VOLUME_DISK_EXTENTS viene acquisito con buffer variabile e interpretato con bounds/count/offset/length/overflow checks.
-- DiskLayout è ora usato dal percorso Windows per ordinare partizioni, validare bounds/overlap e costruire gap raw completi.
-- Il mapping supportato è single extent sul target, associato univocamente per offset e contenuto nei bounds della partizione.
-- Solo un drive-root mount verificabile è usato come sorgente VSS; directory-only e no-letter/no-mount vengono riconosciuti ma falliscono chiusi.
-- Un volume multi-extent che tocca il PhysicalDrive target è UNSUPPORTED e fallisce chiuso; nessun primo extent viene trattato come volume completo.
-- Nessuna modifica al package snapshot: go-vss riceve ancora un drive root, unica sorgente dimostrata compatibile con l'attuale wrapper.
-- Più sorgenti VSS sullo stesso disco falliscono prima di creare snapshot perché il wrapper corrente non supporta un set multi-volume coordinato.
-- PARTITION_INFORMATION_EX usa ora il layout Windows amd64 verificato: style@0, LARGE_INTEGER offset@8/16, number@24, BOOLEAN@28/29 e union MBR/GPT da 112 byte@32, stride totale 144.
-- MBR partition type 0x42 e GPT LDM DATA/METADATA GUID vengono rifiutati prima di enumerare volumi o costruire il piano.
-- Un LDM single-extent non può più attraversare il percorso basic single-extent.
-- MBR type 0xD7/0xE7 e GPT PARTITION_SPACES_GUID/PARTITION_SPACES_DATA_GUID vengono riconosciuti come partizioni protettive Storage Spaces unsupported e rifiutati nello stesso confine pre-acquisizione.
-- Preparato sbam-windows-probe.exe: enumera Volume GUID, mount path ed extents dei soli volumi e interroga IVssBackupComponents::IsVolumeSupported sul GUID completo e separatamente sui drive root.
-- Il probe inizializza VSS soltanto quanto necessario alla query di supporto e rilascia direttamente IVssBackupComponents; non avvia o crea snapshot.
-- supportedVSSSource, buildWindowsDiskPlan, backupWindowsDisk e CreateVSSSnapshot restano invariati: nessuna conclusione produttiva viene anticipata prima dell'evidenza runtime.
+STATO FASI:
+- Phase 1: PASS - harness FIDX deterministico / ricostruzione byte-per-byte.
+- Phase 2A: PASS - PBS HTTP/TLS/fingerprint/error handling fail-closed.
+- Phase 2B: PASS - worker lifecycle, cancellation, no false success.
+- Phase 2B.1: PASS WITH WARNING - close context-aware dei reader; kernel-level Windows I/O cancellation non garantita.
+- Phase 2C: PASS - connessione PBS context-aware.
+- Phase 2C.1: PASS - upgrade HTTP/1.1 -> PBS robusto/fail-closed.
+- Phase 2D: PASS sintetico/cross-build - modello Windows volume/mount/extents e DiskLayout.
+- Phase 2D.1: PASS fail-closed - Dynamic/LDM riconosciuto come unsupported.
+- Phase 2D.2: PASS fail-closed - identificatori noti Storage Spaces riconosciuti come unsupported.
+- Phase 2D.3A: PASS WITH WARNINGS - runtime probe Windows reale per no-mount Volume GUID.
+- Phase 2D.3B: PASS implementation/review/test - supporto production plumbing Volume GUID no-mount pubblicato; runtime specifico del wrapper SBAM/go-vss ancora da validare.
+- Phase 2E: NEXT - coordinamento VSS multi-volume nello stesso snapshot set.
 
-TEST PASSATI:
-- machinebackup success path byte-for-byte e checksum -> PASS
-- otto worker simultanei con barrier esplicita e lifecycle completo -> PASS
-- upload error su primo/intermedio/ultimo chunk -> PASS
-- cancellation del lavoro queued e nessuna finalizzazione -> PASS
-- producer returned error e producer panic recovery -> PASS
-- writer overrun fail-closed -> PASS
-- FIDX out-of-order senza time.Sleep -> PASS
-- go test -race -count=1 . (machinebackup) -> PASS
-- PhysicalDrive case-insensitive regression Fase 2A -> PASS
-- PBS HTTP/TLS/body lifecycle regression Fase 2A -> PASS
-- comandi finali di test/vet/build elencati nell'output Codex -> PASS
-- PBS request context cancellation osservata dal server httptest -> PASS
-- pipeline FIDX termina dopo cancellazione di upload PBS in-flight -> PASS
-- reader/closer sintetico bloccante sbloccato dalla Close su cancellation -> PASS
-- TLS handshake locale bloccato, cancellato via context e connessione peer chiusa -> PASS
-- upgrade PBS bloccato, cancellato via context e connessione peer chiusa -> PASS
-- upgrade pre-cancellato -> PASS
-- upgrade 101 normale e risposta server 401 -> PASS
-- status line malformata e status code non interpretabile -> PASS fail-closed
-- risposta upgrade vuota o troncata -> PASS fail-closed
-- header upgrade oltre 64 KiB -> PASS fail-closed
-- short write della richiesta upgrade -> PASS fail-closed
-- MULTI_SZ zero/uno/multiplo/directory/malformed -> PASS sintetico
-- extent single/multi/short/incoerente/overflow -> PASS sintetico
-- mapping single/raw-other-disk/duplicate/unknown/out-of-bounds -> PASS sintetico
-- directory-only/no-mount/multi-extent target -> PASS fail-closed sintetico
-- più sorgenti VSS -> PASS fail-closed prima degli effetti snapshot
-- partizioni unordered/overlap/past-disk -> PASS sintetico
-- layout/offset/size PARTITION_INFORMATION_EX amd64 -> PASS sintetico
-- basic MBR e basic GPT -> PASS sintetico
-- MBR 0x42, GPT LDM DATA e GPT LDM METADATA -> PASS fail-closed sintetico
-- single-extent LDM -> PASS fail-closed; ordinary basic single-extent resta PASS
-- MBR Storage Spaces 0xD7/0xE7 e GPT Spaces/Spaces Data -> PASS fail-closed sintetico
-- logica pura probe: mount classification, trailing backslash, MULTI_SZ, extents e report -> PASS Linux
-- probe Windows amd64 cross-build -> PASS; RUNTIME EXECUTION NOT PERFORMED
+EVIDENZA RUNTIME WINDOWS 2D.3A:
+LAB: BACKPREALTEST, Windows Server 2019.
+Volume System Reserved senza mount point:
+\\?\Volume{3a886445-0000-0000-0000-100000000000}\
 
-TEST FALLITI / WARNING:
-- Nessun test richiesto fallito.
-- I timeout nei test sono soltanto guardie anti-deadlock; l'ordine è controllato da channel/barrier.
-- Una syscall di lettura device che il sistema operativo non interrompe alla Close può ritardare la cancellazione; uploadWorker attende comunque il producer e non lascia goroutine orfane dopo il ritorno.
-- PBS NETWORK CANCELLATION: PASS per le operazioni FIDX percorse da machinebackup; nessun timeout globale arbitrario è stato introdotto.
-- HTTP/2 CONNECT CANCELLATION: IMPLEMENTED / PASS nei test locali sintetici per handshake, upgrade, pre-cancel, success e server error. Nessun timeout globale arbitrario è stato introdotto.
-- PBS UPGRADE STRICT FAIL-CLOSED: PASS per parsing status, limite header, short write e cleanup della connessione posseduta.
-- WINDOWS I/O CANCELLATION: WARNING / VALIDATION PENDING. La Close context-aware resta implementata per PhysicalDrive e snapshot VSS, ma nessuna garanzia CancelIoEx viene dichiarata sul corrente I/O sincrono. Una soluzione definitiva richiede apertura/lettura overlapped progettata esplicitamente oppure CancelSynchronousIo con ownership del thread, più runtime test Windows sicuri.
-- Questo ambiente Linux ha consentito soltanto cross-build Windows amd64, non runtime validation Windows.
-- VOLUME ENUMERATION: PASS logico/cross-build; WINDOWS RUNTIME VALIDATION PENDING.
-- MULTI_SZ MOUNT PATH PARSING: PASS sintetico.
-- SINGLE EXTENT MAPPING: PASS sintetico; runtime Windows pending.
-- MULTI EXTENT: UNSUPPORTED FAIL-CLOSED sul target.
-- DIRECTORY MOUNT: RECOGNIZED BUT FAIL-CLOSED se manca un drive-root source.
-- NO-LETTER VOLUME: RECOGNIZED BUT FAIL-CLOSED.
-- VSS SOURCE IDENTIFICATION: PASS per drive-root MVP; GUID/directory-only non dichiarati supportati.
-- DYNAMIC/LDM: UNSUPPORTED FAIL-CLOSED nei test sintetici; runtime Windows pending.
-- STORAGE SPACES KNOWN PROTECTIVE PARTITIONS: UNSUPPORTED / FAIL-CLOSED nei test sintetici per MBR 0xD7/0xE7 e GPT Spaces/Spaces Data ufficiali.
-- STORAGE SPACES RUNTIME/TOPOLOGIES: VALIDATION PENDING. Il riconoscimento degli identificatori noti non dimostra che ogni possibile configurazione Storage Spaces reale esponga tali identificatori nel percorso IOCTL corrente.
-- NO-MOUNT VOLUME GUID VSS SUPPORT: RUNTIME VALIDATION PENDING. Il probe è compilato ma non è stato eseguito sul Windows Server 2019 LAB BACKPREALTEST.
-- Nessun push eseguito: lo stato GitHub resta distinto dal workspace locale.
+Probe SBAM read-only:
+- MOUNT_COUNT=0
+- EXTENT_COUNT=1
+- Disk0
+- IsVolumeSupported(Volume GUID)=true
+- exit code=0
 
-BUG CONFERMATI ANCORA APERTI:
-- Garanzia Windows-specific dell'annullamento di I/O kernel-level pendente su disco/snapshot.
-- newchunk/reusechunk e ChunkUploadStats non completati.
-- VSS consistency multi-volume, writer state e cleanup da completare.
-- Runtime validation Windows di volume enumeration, mount paths ed extent resizing ancora pendente.
-- Directory-only/no-letter VSS source e multi-extent restano deliberatamente unsupported fail-closed.
-- Runtime Windows e topologie Storage Spaces che non espongano gli identificatori protettivi noti non sono ancora caratterizzati.
-- Chiamate manifest/blob/finish ignorano ancora alcuni errori nel main caller.
-- P2V non pronto per produzione.
+Il probe non ha creato snapshot e non ha eseguito backup, restore o accesso raw PhysicalDrive.
+
+EVIDENZA RUNTIME VSS WINDOWS SUCCESSIVA:
+Microsoft DiskShadow e stato usato sullo stesso LAB con il Volume GUID no-mount canonical.
+Risultato:
+- shadow set creato realmente;
+- original volume = \\?\Volume{3a886445-0000-0000-0000-100000000000}\
+- shadow device = \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1
+- provider Microsoft Software Shadow Copy provider;
+- attributi Auto_Release / No_Writers / Differential.
+
+Dopo l'uscita da DiskShadow:
+vssadmin list shadows -> nessuna shadow residua.
+Conclusione: Windows VSS supporta realmente la creazione e il cleanup Auto_Release di una shadow copy del no-mount canonical Volume GUID nel LAB.
+
+IMPORTANTE:
+Questo NON equivale ancora a runtime PASS del percorso production SBAM/go-vss.
+Il prossimo runtime gate deve usare il nostro wrapper, non DiskShadow.
+
+FASE 2D.3B - COMPORTAMENTO CONSOLIDATO:
+- Drive-root (es. C:\) resta sorgente VSS preferita.
+- Solo se MountPaths e vuoto, un Volume GUID root strettamente canonical con trailing backslash puo essere usato come fallback VSS.
+- Il Volume GUID viene passato invariato al package snapshot.
+- filepath.Abs/VolumeName non devono corrompere il Volume GUID canonical.
+- GUID malformati falliscono chiusi.
+- Directory-only non diventa automaticamente supported.
+- Multi-extent resta unsupported/fail-closed.
+- Dynamic/LDM resta unsupported/fail-closed.
+- Storage Spaces resta unsupported/fail-closed.
+- FIDX/PBS protocol/DiskLayout/raw-gap reconstruction non sono stati modificati da 2D.3B.
+
+PROBLEMA APERTO CHE BLOCCA IL PRIMO WHOLE-MACHINE BACKUP:
+Un normale disco Windows puo contenere piu volumi che richiedono VSS, ad esempio:
+- System Reserved -> canonical Volume GUID senza lettera
+- C:\ -> drive root
+
+Il codice corrente rifiuta piu sorgenti VSS sullo stesso disk per evitare snapshot presi in tempi differenti.
+Questo fail-closed e corretto, ma impedisce ancora il primo machinebackup completo del disco di sistema.
+
+FASE 2E - OBIETTIVO IMMEDIATO:
+Creare UN SOLO VSS SNAPSHOT SET coordinato contenente tutte le sorgenti VSS supportate del disco, per esempio System Reserved + C:\.
+Tutte le sorgenti devono essere aggiunte al set prima della creazione delle shadow copies.
+Il mapping source -> snapshot deve restare deterministico e il backup non deve partire se il set completo non e stato creato correttamente.
+
+PRIMA DI IMPLEMENTARE 2E:
+Analizzare realmente github.com/st-matskevich/go-vss v0.3.3.
+Verificare se espone in modo sicuro le primitive necessarie per un set coordinato multi-volume.
+Se l'API non le espone, fermarsi e documentare il gap; non inventare workaround e non aggiornare/forkare automaticamente la dipendenza.
+
+PROSSIMO GATE DOPO IMPLEMENTAZIONE 2E:
+Runtime controllato su BACKPREALTEST:
+System Reserved Volume GUID + C:\ nello stesso VSS snapshot set tramite il nostro wrapper SBAM/go-vss.
+Nessun backup reale e nessun PhysicalDrive reale in quel gate.
+
+SOLO DOPO IL GATE VSS MULTI-VOLUME:
+- build machinebackup.exe;
+- primo BACKPREALTEST -> PBS;
+- restore verificato;
+- poi supporto Dynamic/LDM/RAID necessario per FILESERN;
+- successivamente service/installer/scheduler/GUI.
+
+WARNING ANCORA APERTI:
+- Windows kernel-level pending I/O cancellation non garantita.
+- Writer metadata/state e application-consistency policy non ancora production-ready.
+- Cleanup VSS del wrapper deve essere caratterizzato e testato nella Phase 2E.
+- Real Storage Spaces topologies non completamente caratterizzate.
+- Dynamic/LDM e multi-extent non supportati.
+- newchunk/reusechunk e ChunkUploadStats incompleti.
+- alcuni errori manifest/blob/finish del caller restano da irrobustire.
+- post-upload verification non implementata.
+- P2V non production-ready.
 - NBD hardening ancora aperto.
 
-BUG RISOLTI:
-- Propagazione errore worker senza doppio risultato errore/nil.
-- Cancellazione condivisa al primo errore critico.
-- Lifecycle producer/dispatcher/otto worker atteso prima del ritorno.
-- Blocco dei channel e goroutine orfane nei percorsi sintetici coperti.
-- Producer error propagation e conversione controllata dei panic producer.
-- Nessuna finalizzazione FIDX o falso successo dopo errore pipeline.
-- Cancellazione context-aware del TLS handshake e dell'upgrade PBS HTTP/2 custom.
-- Cleanup della connessione posseduta su cancellation, errore I/O e risposta server non-101.
-- Rifiuto esplicito di risposte upgrade malformate/troncate/sovradimensionate e write incomplete.
-- Bug buffer/buffer2 nel parsing mount path Windows.
-- Primo-extent-only e modello Letters sostituiti da identità/mount/extents separati.
-- Raw live-read silenziosa di volumi mappati ma privi di sorgente VSS supportata.
-- Accettazione silenziosa di partizioni LDM single-extent MBR/GPT.
-- Accettazione silenziosa degli identificatori protettivi Storage Spaces MBR/GPT ufficiali conosciuti.
+OPERAZIONI REALI NON ANCORA ESEGUITE DAL CLIENT SBAM:
+- nessun backup Windows -> PBS;
+- nessun restore reale;
+- nessun accesso raw PhysicalDrive nel LAB per queste fasi;
+- nessun test production su FILESERN.
 
-IPOTESI / LAVORO ANCORA APERTO:
-- Statistiche logiche/compresse/trasmesse/riutilizzate.
-- Policy VSS application-consistent e supporto futuro per sorgenti senza drive root.
-- Readiness P2V e hardening NBD.
-- Verifica post-upload su PBS isolato in fase futura.
-
-OPERAZIONI VIETATE NON ESEGUITE:
-- Nessun PhysicalDrive reale.
-- Nessun backup reale.
-- Nessun restore reale.
-- Nessun merge su master.
-- Nessuna creazione snapshot VSS reale e nessuna esecuzione del probe su hardware reale.
-
-STATO FINALE:
-PASS CON WARNING nel workspace locale: probe read-only compilato e logica pura testata; supporto VSS del Volume GUID no-mount, topologie Storage Spaces reali, runtime enumeration/VSS e pending kernel I/O restano VALIDATION PENDING. Non equivale a pubblicazione GitHub né a PASS runtime 2D.3A.
-
-PROSSIMO PASSO CONSIGLIATO:
-Eseguire runtime test Windows isolati per enumeration, resizing IOCTL e drive-root VSS source.
-Mantenere directory/no-letter e multi-extent fail-closed finché non esiste supporto dimostrato.
-Non confondere questa validazione con la futura policy VSS writer/multi-volume.
-
-ULTIME OPERAZIONI GIT:
-- c50181b stato iniziale locale consolidato fino alla Fase 2D.2
-- PR #2 staging a 38b68d4 e PR #1 canonica a da790c8 secondo istruzione utente; nessuna operazione remota eseguita
-- 519b624 base upstream originale
-- Dopo il commit Fase 2D.3A il working tree deve contenere soltanto go.work.sum preesistente e non tracciato; l'EXE di test resta fuori dal repository in /tmp.
+STATO FINALE AL 2026-08-20:
+2D.3A runtime capability: PASS WITH WARNINGS.
+Windows DiskShadow real no-mount Volume GUID snapshot + Auto_Release cleanup: PASS.
+2D.3B implementation/code-review/synthetic/cross-build: PASS, pubblicata sulla branch di lavoro.
+SBAM/go-vss wrapper runtime Volume GUID: PENDING.
+Coordinated multi-volume VSS: PENDING, Phase 2E.
+Windows -> PBS -> restore: PENDING.
+PRODUCTION READY: NO.
