@@ -8,8 +8,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 
-	"github.com/st-matskevich/go-vss"
+	ole "github.com/go-ole/go-ole"
 )
 
 func SymlinkSnapshot(symlinkPath string, id string, deviceObjectPath string) (string, error) {
@@ -53,42 +54,36 @@ func getAppDataFolder() (string, error) {
 }
 
 func CreateVSSSnapshot(paths []string, backup_callback func(sn map[string]SnapShot) error) error {
-
-	sn := vss.Snapshotter{}
-	snapshots := make(map[string]SnapShot)
-
-	for _, path := range paths {
-		path, volName, subPath, err := prepareSnapshotSource(path, filepath.Abs, filepath.VolumeName)
-		if err != nil {
-			return err
+	requests, sources, err := prepareVSSSnapshotRequests(paths, filepath.Abs, filepath.VolumeName)
+	if err != nil {
+		return err
+	}
+	if len(sources) == 0 {
+		if backup_callback == nil {
+			return fmt.Errorf("VSS backup callback is nil")
 		}
-
-		appDataFolder, err := getAppDataFolder()
-		if err != nil {
-			fmt.Println("Error:", err)
-			return err
-		}
-
-		defer sn.Release()
-
-		fmt.Printf("Creating VSS Snapshot...")
-		snapshot, err := sn.CreateSnapshot(volName, false, 180)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Snapshot created: %s\n", snapshot.Id)
-
-		_, err = SymlinkSnapshot(filepath.Join(appDataFolder, "VSS"), snapshot.Id, snapshot.DeviceObjectPath)
-
-		if err != nil {
-			return err
-		}
-
-		snapshots[path] = SnapShot{FullPath: filepath.Join(appDataFolder, "VSS", snapshot.Id, subPath), Id: snapshot.Id, ObjectPath: snapshot.DeviceObjectPath, Valid: true}
-
+		return backup_callback(map[string]SnapShot{})
 	}
 
-	return backup_callback(snapshots)
+	appDataFolder, err := getAppDataFolder()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := ole.CoInitialize(0); err != nil {
+		return fmt.Errorf("initialize COM for VSS: %w", err)
+	}
+	defer ole.CoUninitialize()
+
+	session, err := newWindowsVSSSnapshotSetSession(sources)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Creating coordinated VSS snapshot set...\n")
+	return createVSSSnapshotFromRequests(requests, sources, session, filepath.Join(appDataFolder, "VSS"), SymlinkSnapshot, backup_callback)
 
 }
 
