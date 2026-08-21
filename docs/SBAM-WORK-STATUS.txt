@@ -2,43 +2,34 @@ SBAM PBS AGENT - WORK STATUS
 ============================
 
 DATA/FASE:
-2026-08-20 - FASE 2D.3B CONSOLIDATA / PREPARAZIONE FASE 2E MULTI-VOLUME VSS.
+2026-08-21 - REPOSITORY CLEANUP COMPLETATO / FASE 2E DA IMPLEMENTARE SU MASTER.
 
 OBIETTIVO FINALE:
-Costruire un client Windows per il backup di server fisici direttamente su Proxmox Backup Server, preservando compatibilita con restore file, restore fisico e futuro Rapid P2V.
+Costruire un client Windows per il backup di server fisici direttamente su Proxmox Backup Server, preservando restore file, Bare Metal Restore e futuro Rapid P2V.
 PBS resta responsabile di datastore, chunk, FIDX, deduplica, retention, prune, verify e sync.
 SBAM PBS Agent resta responsabile di inventario Windows, VSS, dischi/layout/boot metadata e orchestrazione backup/restore.
 
-REPOSITORY:
+REPOSITORY CODICE:
 mbelfiore/proxmoxbackupclient_go
 
-BASE UPSTREAM NEL NOSTRO FORK:
-master = 519b62425a7da0ec137e7c86e17993c9bd409d59
-Master non e stato modificato o mergiato durante le fasi 2D.3A/2D.3B.
+WORKFLOW GIT ATTUALE:
+- Un solo branch GitHub attivo: master.
+- Nessuna PR aperta.
+- Nessun branch laterale da usare come stato progetto.
+- Codex puo lavorare localmente su un branch workspace chiamato work; quel nome locale NON e stato GitHub.
+- Una modifica e considerata parte del progetto solo quando e stata revisionata ed e presente su GitHub master.
+- Non creare branch/PR salvo richiesta esplicita.
 
-BRANCH DI LAVORO GITHUB:
-codex/locate-mbelfiore/proxmoxbackupclient_go-6jqxlw
+MASTER CONSOLIDATO:
+Il lavoro consolidato fino alla Phase 2D.3B e presente su master.
+La base upstream Tizbac rimane nella cronologia del fork e puo essere recuperata dalla storia Git se necessario.
 
-WORKSPACE CODEX:
-Il branch locale Codex puo chiamarsi semplicemente work. Il nome locale work e normale e NON deve essere confrontato con il nome della branch GitHub.
-La precondizione importante per un nuovo task Codex e l'HEAD esatto della branch di lavoro pubblicata.
+REPOSITORY MEMORIA PROGETTO:
+mbelfiore/SBAM-PBS-Agent
+- un solo branch attivo: main;
+- contiene SBAM-DECISIONS.md, SBAM-IDEAS-RAW.md e SBAM-TODO.md.
 
-STATO GIT PUBBLICATO PRIMA DI QUESTA REVISIONE DOCUMENTALE:
-2D.3B codice pubblicato su GitHub al commit:
-6ad5497be864dfab5b7ed97446c16f50c3c17cc2 - Support no-mount Volume GUID VSS sources
-
-Il commit 2D.3B contiene esclusivamente:
-- machinebackup/windows_volume_model.go
-- machinebackup/windows_volume_model_test.go
-- snapshot/snapshot_common.go
-- snapshot/snapshot_common_test.go
-- snapshot/win_snapshot.go
-
-Nessun merge su master.
-Nessun force-push.
-Nessuna nuova PR creata per 2D.3B.
-
-STATO FASI:
+STATO FASI CONSOLIDATE:
 - Phase 1: PASS - harness FIDX deterministico / ricostruzione byte-per-byte.
 - Phase 2A: PASS - PBS HTTP/TLS/fingerprint/error handling fail-closed.
 - Phase 2B: PASS - worker lifecycle, cancellation, no false success.
@@ -49,12 +40,12 @@ STATO FASI:
 - Phase 2D.1: PASS fail-closed - Dynamic/LDM riconosciuto come unsupported.
 - Phase 2D.2: PASS fail-closed - identificatori noti Storage Spaces riconosciuti come unsupported.
 - Phase 2D.3A: PASS WITH WARNINGS - runtime probe Windows reale per no-mount Volume GUID.
-- Phase 2D.3B: PASS implementation/review/test - supporto production plumbing Volume GUID no-mount pubblicato; runtime specifico del wrapper SBAM/go-vss ancora da validare.
-- Phase 2E: NEXT - coordinamento VSS multi-volume nello stesso snapshot set.
+- Phase 2D.3B: PASS implementation/review/test - supporto production plumbing Volume GUID no-mount consolidato su master.
+- Phase 2E: NON ANCORA CONSOLIDATA SU MASTER - coordinated multi-volume VSS snapshot set.
 
-EVIDENZA RUNTIME WINDOWS 2D.3A:
+EVIDENZA RUNTIME WINDOWS GIA ESEGUITA:
 LAB: BACKPREALTEST, Windows Server 2019.
-Volume System Reserved senza mount point:
+System Reserved senza mount point:
 \\?\Volume{3a886445-0000-0000-0000-100000000000}\
 
 Probe SBAM read-only:
@@ -64,30 +55,20 @@ Probe SBAM read-only:
 - IsVolumeSupported(Volume GUID)=true
 - exit code=0
 
-Il probe non ha creato snapshot e non ha eseguito backup, restore o accesso raw PhysicalDrive.
-
-EVIDENZA RUNTIME VSS WINDOWS SUCCESSIVA:
-Microsoft DiskShadow e stato usato sullo stesso LAB con il Volume GUID no-mount canonical.
-Risultato:
-- shadow set creato realmente;
-- original volume = \\?\Volume{3a886445-0000-0000-0000-100000000000}\
-- shadow device = \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1
+Microsoft DiskShadow sullo stesso LAB:
+- shadow VSS reale creata usando esattamente il canonical Volume GUID no-mount;
 - provider Microsoft Software Shadow Copy provider;
-- attributi Auto_Release / No_Writers / Differential.
-
-Dopo l'uscita da DiskShadow:
-vssadmin list shadows -> nessuna shadow residua.
-Conclusione: Windows VSS supporta realmente la creazione e il cleanup Auto_Release di una shadow copy del no-mount canonical Volume GUID nel LAB.
+- shadow device creato correttamente;
+- Auto_Release cleanup verificato;
+- dopo l'uscita, vssadmin list shadows non mostrava shadow residue.
 
 IMPORTANTE:
-Questo NON equivale ancora a runtime PASS del percorso production SBAM/go-vss.
-Il prossimo runtime gate deve usare il nostro wrapper, non DiskShadow.
+Questa evidenza prova la capacita Windows/VSS del Volume GUID, ma NON prova ancora il percorso production SBAM/go-vss multi-volume.
 
-FASE 2D.3B - COMPORTAMENTO CONSOLIDATO:
+COMPORTAMENTO 2D.3B CONSOLIDATO:
 - Drive-root (es. C:\) resta sorgente VSS preferita.
-- Solo se MountPaths e vuoto, un Volume GUID root strettamente canonical con trailing backslash puo essere usato come fallback VSS.
+- Se MountPaths e vuoto, un canonical Volume GUID root con trailing backslash puo essere usato come fallback VSS.
 - Il Volume GUID viene passato invariato al package snapshot.
-- filepath.Abs/VolumeName non devono corrompere il Volume GUID canonical.
 - GUID malformati falliscono chiusi.
 - Directory-only non diventa automaticamente supported.
 - Multi-extent resta unsupported/fail-closed.
@@ -96,58 +77,71 @@ FASE 2D.3B - COMPORTAMENTO CONSOLIDATO:
 - FIDX/PBS protocol/DiskLayout/raw-gap reconstruction non sono stati modificati da 2D.3B.
 
 PROBLEMA APERTO CHE BLOCCA IL PRIMO WHOLE-MACHINE BACKUP:
-Un normale disco Windows puo contenere piu volumi che richiedono VSS, ad esempio:
-- System Reserved -> canonical Volume GUID senza lettera
-- C:\ -> drive root
+Un normale disco Windows di sistema puo contenere almeno:
+- System Reserved -> canonical Volume GUID senza lettera;
+- C:\ -> drive root.
 
-Il codice corrente rifiuta piu sorgenti VSS sullo stesso disk per evitare snapshot presi in tempi differenti.
-Questo fail-closed e corretto, ma impedisce ancora il primo machinebackup completo del disco di sistema.
+Il codice consolidato su master rifiuta ancora piu sorgenti VSS per evitare snapshot presi in tempi differenti.
+Questo fail-closed e corretto, ma blocca il primo machinebackup completo del disco di sistema.
 
 FASE 2E - OBIETTIVO IMMEDIATO:
-Creare UN SOLO VSS SNAPSHOT SET coordinato contenente tutte le sorgenti VSS supportate del disco, per esempio System Reserved + C:\.
-Tutte le sorgenti devono essere aggiunte al set prima della creazione delle shadow copies.
-Il mapping source -> snapshot deve restare deterministico e il backup non deve partire se il set completo non e stato creato correttamente.
+Implementare UN SOLO VSS SNAPSHOT SET coordinato contenente tutte le sorgenti VSS supportate, almeno:
+- System Reserved tramite canonical Volume GUID;
+- C:\ tramite drive root.
 
-PRIMA DI IMPLEMENTARE 2E:
-Analizzare realmente github.com/st-matskevich/go-vss v0.3.3.
-Verificare se espone in modo sicuro le primitive necessarie per un set coordinato multi-volume.
-Se l'API non le espone, fermarsi e documentare il gap; non inventare workaround e non aggiornare/forkare automaticamente la dipendenza.
+Tutte le sorgenti devono essere aggiunte allo stesso set prima della creazione delle shadow copy.
+Il mapping source -> snapshot deve essere deterministico.
+Se una sorgente fallisce, nessuna callback di backup deve partire e il cleanup deve essere fail-closed.
 
-PROSSIMO GATE DOPO IMPLEMENTAZIONE 2E:
-Runtime controllato su BACKPREALTEST:
-System Reserved Volume GUID + C:\ nello stesso VSS snapshot set tramite il nostro wrapper SBAM/go-vss.
-Nessun backup reale e nessun PhysicalDrive reale in quel gate.
+GO-VSS:
+La Phase 2E deve usare in modo verificato la dipendenza esistente github.com/st-matskevich/go-vss v0.3.3.
+Non aggiornare/forkare automaticamente la dipendenza.
+Non simulare il coordinamento chiamando CreateSnapshot separatamente per ogni volume.
 
-SOLO DOPO IL GATE VSS MULTI-VOLUME:
-- build machinebackup.exe;
-- primo BACKPREALTEST -> PBS;
-- restore verificato;
-- poi supporto Dynamic/LDM/RAID necessario per FILESERN;
-- successivamente service/installer/scheduler/GUI.
+PROSSIMO ARTEFATTO DI TEST:
+Dopo/insieme alla corretta implementazione 2E, creare un piccolo eseguibile Windows non distruttivo dedicato al LAB, ad esempio:
+SBAM-VSS-MultiVolume-Test.exe
 
-WARNING ANCORA APERTI:
+Deve fare soltanto:
+- aprire una singola sessione VSS;
+- creare un unico snapshot set;
+- aggiungere System Reserved Volume GUID + C:\;
+- creare le due shadow nello stesso set;
+- mostrare Snapshot Set ID, source, Shadow ID e DeviceObjectPath;
+- eseguire cleanup;
+- terminare senza backup, senza PBS, senza PhysicalDrive, senza restore.
+
+RUNTIME GATE 2E-R:
+Eseguire SBAM-VSS-MultiVolume-Test.exe come amministratore su BACKPREALTEST.
+PASS richiede:
+- System Reserved e C:\ nello stesso snapshot set reale;
+- entrambe le shadow valide;
+- cleanup senza shadow residue;
+- nessun accesso raw PhysicalDrive;
+- nessun backup/restore/PBS.
+
+SOLO DOPO 2E-R PASS:
+1. build/use machinebackup.exe;
+2. primo BACKPREALTEST -> PBS;
+3. restore verificato;
+4. poi supporto Dynamic/LDM/RAID necessario per FILESERN;
+5. successivamente service/installer/scheduler/GUI.
+
+WARNING APERTI:
 - Windows kernel-level pending I/O cancellation non garantita.
-- Writer metadata/state e application-consistency policy non ancora production-ready.
-- Cleanup VSS del wrapper deve essere caratterizzato e testato nella Phase 2E.
-- Real Storage Spaces topologies non completamente caratterizzate.
+- Writer metadata/state e application consistency non production-ready.
 - Dynamic/LDM e multi-extent non supportati.
+- Storage Spaces reali non supportati.
 - newchunk/reusechunk e ChunkUploadStats incompleti.
-- alcuni errori manifest/blob/finish del caller restano da irrobustire.
+- alcuni errori caller manifest/blob/finish restano da irrobustire.
 - post-upload verification non implementata.
 - P2V non production-ready.
-- NBD hardening ancora aperto.
+- NBD hardening aperto.
 
-OPERAZIONI REALI NON ANCORA ESEGUITE DAL CLIENT SBAM:
-- nessun backup Windows -> PBS;
-- nessun restore reale;
-- nessun accesso raw PhysicalDrive nel LAB per queste fasi;
-- nessun test production su FILESERN.
-
-STATO FINALE AL 2026-08-20:
-2D.3A runtime capability: PASS WITH WARNINGS.
-Windows DiskShadow real no-mount Volume GUID snapshot + Auto_Release cleanup: PASS.
-2D.3B implementation/code-review/synthetic/cross-build: PASS, pubblicata sulla branch di lavoro.
-SBAM/go-vss wrapper runtime Volume GUID: PENDING.
-Coordinated multi-volume VSS: PENDING, Phase 2E.
+STATO FINALE AL 2026-08-21:
+Repository Git semplificati: PASS.
+2D.3B Volume GUID: CONSOLIDATA SU MASTER.
+2E coordinated multi-volume VSS: DA IMPLEMENTARE/REVISIONARE SU MASTER.
+2E-R executable runtime test: NEXT.
 Windows -> PBS -> restore: PENDING.
 PRODUCTION READY: NO.
