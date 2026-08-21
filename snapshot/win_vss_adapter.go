@@ -6,16 +6,73 @@ package snapshot
 import (
 	"fmt"
 	"strings"
+	"syscall"
+	"unsafe"
 
 	ole "github.com/go-ole/go-ole"
 	vss "github.com/st-matskevich/go-vss"
 )
 
 const windowsVSSOperationTimeout = 180 * 1000
+const windowsVSSFreeSnapshotPropertiesProcedure = "VssFreeSnapshotPropertiesInternal"
+
+type windowsVSSSnapshotPropertiesCleanup func(*vss.VssSnapshotProperties)
+type windowsVSSSnapshotPropertiesCleanupResolver func() (windowsVSSSnapshotPropertiesCleanup, error)
+
+type windowsVSSSnapshotPropertiesReader interface {
+	GetSnapshotId() string
+	GetSnapshotSetId() string
+	GetSnapshotDeviceObject() string
+}
 
 type windowsVSSSnapshotSetSession struct {
-	components  *vss.IVssBackupComponents
-	snapshotIDs map[string]ole.GUID
+	components             *vss.IVssBackupComponents
+	snapshotIDs            map[string]ole.GUID
+	freeSnapshotProperties windowsVSSSnapshotPropertiesCleanup
+}
+
+func resolveWindowsVSSSnapshotPropertiesCleanup() (windowsVSSSnapshotPropertiesCleanup, error) {
+	procedure := syscall.NewLazyDLL("VssApi.dll").NewProc(windowsVSSFreeSnapshotPropertiesProcedure)
+	if err := procedure.Find(); err != nil {
+		return nil, fmt.Errorf("resolve VSS snapshot properties cleanup procedure %q: %w", windowsVSSFreeSnapshotPropertiesProcedure, err)
+	}
+	return func(properties *vss.VssSnapshotProperties) {
+		procedure.Call(uintptr(unsafe.Pointer(properties)))
+	}, nil
+}
+
+func requireWindowsVSSSnapshotPropertiesCleanup(resolve windowsVSSSnapshotPropertiesCleanupResolver) (windowsVSSSnapshotPropertiesCleanup, error) {
+	if resolve == nil {
+		return nil, fmt.Errorf("VSS snapshot properties cleanup resolver is nil")
+	}
+	cleanup, err := resolve()
+	if err != nil {
+		return nil, fmt.Errorf("VSS snapshot properties cleanup is unavailable: %w", err)
+	}
+	if cleanup == nil {
+		return nil, fmt.Errorf("VSS snapshot properties cleanup resolver returned nil")
+	}
+	return cleanup, nil
+}
+
+func copyAndReleaseWindowsVSSSnapshotProperties(properties windowsVSSSnapshotPropertiesReader, cleanup func()) (vssSnapshotProperties, error) {
+	if cleanup == nil {
+		return vssSnapshotProperties{}, fmt.Errorf("VSS snapshot properties cleanup is nil")
+	}
+	defer cleanup()
+	if properties == nil {
+		return vssSnapshotProperties{}, fmt.Errorf("VSS snapshot properties are nil")
+	}
+
+	deviceObjectPath := properties.GetSnapshotDeviceObject()
+	if deviceObjectPath != "" && !strings.HasSuffix(deviceObjectPath, `\`) {
+		deviceObjectPath += `\`
+	}
+	return vssSnapshotProperties{
+		SnapshotID:       properties.GetSnapshotId(),
+		SnapshotSetID:    properties.GetSnapshotSetId(),
+		DeviceObjectPath: deviceObjectPath,
+	}, nil
 }
 
 func waitForWindowsVSSOperation(operation string, async *vss.IVssAsync) error {
@@ -47,13 +104,18 @@ func waitForWindowsVSSOperation(operation string, async *vss.IVssAsync) error {
 }
 
 func newWindowsVSSSnapshotSetSession(sources []string) (*windowsVSSSnapshotSetSession, error) {
+	freeSnapshotProperties, err := requireWindowsVSSSnapshotPropertiesCleanup(resolveWindowsVSSSnapshotPropertiesCleanup)
+	if err != nil {
+		return nil, err
+	}
 	components, err := vss.LoadAndInitVSS()
 	if err != nil {
 		return nil, fmt.Errorf("initialize VSS backup components: %w", err)
 	}
 	session := &windowsVSSSnapshotSetSession{
-		components:  components,
-		snapshotIDs: make(map[string]ole.GUID, len(sources)),
+		components:             components,
+		snapshotIDs:            make(map[string]ole.GUID, len(sources)),
+		freeSnapshotProperties: freeSnapshotProperties,
 	}
 	succeeded := false
 	defer func() {
@@ -124,6 +186,9 @@ func (s *windowsVSSSnapshotSetSession) DoSnapshotSet() error {
 }
 
 func (s *windowsVSSSnapshotSetSession) GetSnapshotProperties(snapshotID string) (vssSnapshotProperties, error) {
+	if s.freeSnapshotProperties == nil {
+		return vssSnapshotProperties{}, fmt.Errorf("VSS snapshot properties cleanup is unavailable")
+	}
 	id, exists := s.snapshotIDs[snapshotID]
 	if !exists {
 		return vssSnapshotProperties{}, fmt.Errorf("unknown VSS snapshot ID %q", snapshotID)
@@ -132,15 +197,9 @@ func (s *windowsVSSSnapshotSetSession) GetSnapshotProperties(snapshotID string) 
 	if err := s.components.GetSnapshotProperties(id, &properties); err != nil {
 		return vssSnapshotProperties{}, err
 	}
-	deviceObjectPath := properties.GetSnapshotDeviceObject()
-	if deviceObjectPath != "" && !strings.HasSuffix(deviceObjectPath, `\`) {
-		deviceObjectPath += `\`
-	}
-	return vssSnapshotProperties{
-		SnapshotID:       properties.GetSnapshotId(),
-		SnapshotSetID:    properties.GetSnapshotSetId(),
-		DeviceObjectPath: deviceObjectPath,
-	}, nil
+	return copyAndReleaseWindowsVSSSnapshotProperties(&properties, func() {
+		s.freeSnapshotProperties(&properties)
+	})
 }
 
 func (s *windowsVSSSnapshotSetSession) BackupComplete() error {
