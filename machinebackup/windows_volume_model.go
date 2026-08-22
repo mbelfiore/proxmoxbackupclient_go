@@ -98,6 +98,25 @@ type WindowsVolume struct {
 	Extents    []WindowsDiskExtent
 }
 
+type WindowsDriveType uint32
+
+const (
+	WindowsDriveUnknown   WindowsDriveType = 0
+	WindowsDriveNoRootDir WindowsDriveType = 1
+	WindowsDriveRemovable WindowsDriveType = 2
+	WindowsDriveFixed     WindowsDriveType = 3
+	WindowsDriveRemote    WindowsDriveType = 4
+	WindowsDriveCDROM     WindowsDriveType = 5
+	WindowsDriveRAMDisk   WindowsDriveType = 6
+)
+
+// skipWindowsVolumeInventory reports whether a volume is known not to be
+// backed by disk extents. Keep this deliberately narrow: every type except a
+// verified CD/DVD volume continues through the normal fail-closed inventory.
+func skipWindowsVolumeInventory(driveType WindowsDriveType) bool {
+	return driveType == WindowsDriveCDROM
+}
+
 type WindowsMountKind uint8
 
 const (

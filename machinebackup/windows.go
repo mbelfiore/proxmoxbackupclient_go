@@ -61,6 +61,7 @@ var (
 	procFindFirstVolumeW             = modkernel32.NewProc("FindFirstVolumeW")
 	procFindNextVolumeW              = modkernel32.NewProc("FindNextVolumeW")
 	procFindVolumeClose              = modkernel32.NewProc("FindVolumeClose")
+	procGetDriveTypeW                = modkernel32.NewProc("GetDriveTypeW")
 	procGetVolumePathNamesForVolumeW = modkernel32.NewProc("GetVolumePathNamesForVolumeNameW")
 )
 
@@ -152,35 +153,44 @@ func enumWindowsVolumes() (volumes []WindowsVolume, returnErr error) {
 			return nil, fmt.Errorf("FindVolume returned an empty volume GUID")
 		}
 		fmt.Println(volumeGUID)
-		openName, err := windows.UTF16PtrFromString(strings.TrimSuffix(volumeGUID, "\\"))
+		volumeRoot, err := windows.UTF16PtrFromString(volumeGUID)
 		if err != nil {
 			return nil, err
 		}
-		handle, err := windows.CreateFile(
-			openName,
-			windows.GENERIC_READ,
-			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
-			nil,
-			windows.OPEN_EXISTING,
-			0,
-			0,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("CreateFile(%s): %w", volumeGUID, err)
+		driveType, _, _ := procGetDriveTypeW.Call(uintptr(unsafe.Pointer(volumeRoot)))
+		if skipWindowsVolumeInventory(WindowsDriveType(driveType)) {
+			fmt.Printf("Skipping verified CD/DVD volume %s during disk extent inventory\n", volumeGUID)
+		} else {
+			openName, err := windows.UTF16PtrFromString(strings.TrimSuffix(volumeGUID, "\\"))
+			if err != nil {
+				return nil, err
+			}
+			handle, err := windows.CreateFile(
+				openName,
+				windows.GENERIC_READ,
+				windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+				nil,
+				windows.OPEN_EXISTING,
+				0,
+				0,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("CreateFile(%s): %w", volumeGUID, err)
+			}
+			extents, extentErr := getVolumeDiskExtents(handle, volumeGUID)
+			closeErr := windows.CloseHandle(handle)
+			if extentErr != nil {
+				return nil, extentErr
+			}
+			if closeErr != nil {
+				return nil, fmt.Errorf("CloseHandle(%s): %w", volumeGUID, closeErr)
+			}
+			mountPaths, err := getVolumeMountPaths(volumeGUID)
+			if err != nil {
+				return nil, err
+			}
+			volumes = append(volumes, WindowsVolume{VolumeGUID: volumeGUID, MountPaths: mountPaths, Extents: extents})
 		}
-		extents, extentErr := getVolumeDiskExtents(handle, volumeGUID)
-		closeErr := windows.CloseHandle(handle)
-		if extentErr != nil {
-			return nil, extentErr
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("CloseHandle(%s): %w", volumeGUID, closeErr)
-		}
-		mountPaths, err := getVolumeMountPaths(volumeGUID)
-		if err != nil {
-			return nil, err
-		}
-		volumes = append(volumes, WindowsVolume{VolumeGUID: volumeGUID, MountPaths: mountPaths, Extents: extents})
 
 		next, _, nextErr := procFindNextVolumeW.Call(
 			uintptr(findHandle),

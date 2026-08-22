@@ -170,6 +170,30 @@ func TestParseVolumeDiskExtents(t *testing.T) {
 	}
 }
 
+func TestSkipWindowsVolumeInventoryOnlyForCDROM(t *testing.T) {
+	tests := []struct {
+		name      string
+		driveType WindowsDriveType
+		want      bool
+	}{
+		{"unknown remains fail closed", WindowsDriveUnknown, false},
+		{"missing root remains fail closed", WindowsDriveNoRootDir, false},
+		{"removable remains fail closed", WindowsDriveRemovable, false},
+		{"fixed remains fail closed", WindowsDriveFixed, false},
+		{"remote remains fail closed", WindowsDriveRemote, false},
+		{"CDROM is excluded", WindowsDriveCDROM, true},
+		{"RAM disk remains fail closed", WindowsDriveRAMDisk, false},
+		{"unexpected type remains fail closed", WindowsDriveType(99), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := skipWindowsVolumeInventory(tc.driveType); got != tc.want {
+				t.Fatalf("skip=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildWindowsDiskPlan(t *testing.T) {
 	partitions := []DiskExtent{{Start: 100, End: 200}, {Start: 300, End: 500}}
 	volume := WindowsVolume{VolumeGUID: `\\?\Volume{one}\`, MountPaths: []string{`C:\Mount\Data\`, `C:\`}, Extents: []WindowsDiskExtent{{DiskNumber: 0, StartingOffset: 100, Length: 100}}}
