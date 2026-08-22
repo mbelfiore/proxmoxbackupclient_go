@@ -89,3 +89,32 @@ func TestRequireWindowsVSSSnapshotPropertiesCleanupFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestWindowsVSSCOMSecurityInitializerRunsOnce(t *testing.T) {
+	wantErr := errors.New("security initialization failed")
+	calls := 0
+	initializer := &windowsVSSCOMSecurityInitializer{initialize: func() error {
+		calls++
+		return wantErr
+	}}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := initializer.Initialize(); !errors.Is(err, wantErr) {
+			t.Fatalf("attempt %d error=%v, want %v", attempt+1, err, wantErr)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("security initialization calls=%d, want exactly 1", calls)
+	}
+}
+
+func TestReleaseGoVSSQueriedInterfaceBalancesBothReferences(t *testing.T) {
+	releaseCalls := 0
+	releaseGoVSSQueriedInterface(func() int32 {
+		releaseCalls++
+		return int32(2 - releaseCalls)
+	})
+	if releaseCalls != 2 {
+		t.Fatalf("release calls=%d, want exactly 2", releaseCalls)
+	}
+}

@@ -81,7 +81,7 @@ func createVSSSnapshotFromRequests(requests []preparedVSSSnapshotRequest, source
 		return coordinateVSSSnapshotSet(sources, session, nil)
 	}
 
-	return coordinateVSSSnapshotSet(sources, session, func(sourceSnapshots map[string]SnapShot) error {
+	return coordinateVSSSnapshotSetWithCleanup(sources, session, func(sourceSnapshots map[string]SnapShot) error {
 		mapped, err := mapVSSSnapshotsToRequests(requests, sourceSnapshots, symlinkPath, symlink)
 		if err != nil {
 			return err

@@ -1,9 +1,6 @@
 package snapshot
 
-import (
-	"errors"
-	"fmt"
-)
+import "fmt"
 
 type VSSSnapshotSetProbeResult struct {
 	Source           string
@@ -61,48 +58,18 @@ func validateVSSSnapshotSetProbe(sources []string, snapshots map[string]SnapShot
 	return results, nil
 }
 
-type vssSnapshotSetProbeSession struct {
-	vssSnapshotSetSession
-	completed       bool
-	aborted         bool
-	releaseAbortErr error
-}
-
-func (s *vssSnapshotSetProbeSession) BackupComplete() error {
-	err := s.vssSnapshotSetSession.BackupComplete()
-	if err == nil {
-		s.completed = true
-	}
-	return err
-}
-
-func (s *vssSnapshotSetProbeSession) AbortBackup() error {
-	s.aborted = true
-	return s.vssSnapshotSetSession.AbortBackup()
-}
-
-func (s *vssSnapshotSetProbeSession) Release() {
-	if !s.completed && !s.aborted {
-		s.aborted = true
-		s.releaseAbortErr = s.vssSnapshotSetSession.AbortBackup()
-	}
-	s.vssSnapshotSetSession.Release()
-}
-
 func coordinateVSSSnapshotSetProbe(sources []string, session vssSnapshotSetSession, callback func([]VSSSnapshotSetProbeResult) error) error {
 	if session == nil {
 		return fmt.Errorf("VSS snapshot-set probe session is nil")
 	}
-	probeSession := &vssSnapshotSetProbeSession{vssSnapshotSetSession: session}
 	if callback == nil {
-		return errors.Join(coordinateVSSSnapshotSet(sources, probeSession, nil), probeSession.releaseAbortErr)
+		return coordinateVSSSnapshotSetWithCleanup(sources, session, nil)
 	}
-	err := coordinateVSSSnapshotSet(sources, probeSession, func(snapshots map[string]SnapShot) error {
+	return coordinateVSSSnapshotSetWithCleanup(sources, session, func(snapshots map[string]SnapShot) error {
 		results, err := validateVSSSnapshotSetProbe(sources, snapshots)
 		if err != nil {
 			return err
 		}
 		return callback(results)
 	})
-	return errors.Join(err, probeSession.releaseAbortErr)
 }

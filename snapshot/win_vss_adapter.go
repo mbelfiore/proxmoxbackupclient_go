@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -16,6 +17,62 @@ import (
 
 const windowsVSSOperationTimeout = 180 * 1000
 const windowsVSSFreeSnapshotPropertiesProcedure = "VssFreeSnapshotPropertiesInternal"
+const windowsIVssBackupComponentsDeleteSnapshotsVTableIndex = 39
+
+const (
+	windowsRPCAuthnLevelPktPrivacy = uint32(6)
+	windowsRPCImpLevelIdentify     = uint32(2)
+	windowsEOACNone                = uint32(0)
+)
+
+var windowsRPCAuthServicesDefault = ^uintptr(0)
+
+type windowsVSSCOMSecurityInitializer struct {
+	once       sync.Once
+	initialize func() error
+	err        error
+}
+
+func (i *windowsVSSCOMSecurityInitializer) Initialize() error {
+	if i == nil || i.initialize == nil {
+		return fmt.Errorf("VSS COM security initializer is nil")
+	}
+	i.once.Do(func() {
+		i.err = i.initialize()
+	})
+	return i.err
+}
+
+func initializeWindowsVSSCOMSecurity() error {
+	procedure := syscall.NewLazyDLL("Ole32.dll").NewProc("CoInitializeSecurity")
+	if err := procedure.Find(); err != nil {
+		return fmt.Errorf("resolve CoInitializeSecurity: %w", err)
+	}
+	hresult, _, _ := procedure.Call(
+		0,
+		windowsRPCAuthServicesDefault,
+		0,
+		0,
+		uintptr(windowsRPCAuthnLevelPktPrivacy),
+		uintptr(windowsRPCImpLevelIdentify),
+		0,
+		uintptr(windowsEOACNone),
+		0,
+	)
+	if hresult != 0 {
+		return fmt.Errorf("initialize VSS COM security: %w", ole.NewError(hresult))
+	}
+	return nil
+}
+
+var processWindowsVSSCOMSecurity = &windowsVSSCOMSecurityInitializer{initialize: initializeWindowsVSSCOMSecurity}
+
+func releaseGoVSSQueriedInterface(release func() int32) {
+	// go-vss v0.3.3 keeps both the original IUnknown reference and the
+	// QueryInterface reference. The adapter owns and releases both.
+	release()
+	release()
+}
 
 type windowsVSSSnapshotPropertiesCleanup func(*vss.VssSnapshotProperties)
 type windowsVSSSnapshotPropertiesCleanupResolver func() (windowsVSSSnapshotPropertiesCleanup, error)
@@ -29,6 +86,8 @@ type windowsVSSSnapshotPropertiesReader interface {
 type windowsVSSSnapshotSetSession struct {
 	components             *vss.IVssBackupComponents
 	snapshotIDs            map[string]ole.GUID
+	snapshotSetID          string
+	snapshotSetGUID        ole.GUID
 	freeSnapshotProperties windowsVSSSnapshotPropertiesCleanup
 }
 
@@ -82,7 +141,7 @@ func waitForWindowsVSSOperation(operation string, async *vss.IVssAsync) error {
 	}
 	defer func() {
 		_ = async.Cancel()
-		async.Release()
+		releaseGoVSSQueriedInterface(async.Release)
 	}()
 
 	if err := async.Wait(windowsVSSOperationTimeout); err != nil {
@@ -157,7 +216,9 @@ func (s *windowsVSSSnapshotSetSession) StartSnapshotSet() (string, error) {
 	if err := s.components.StartSnapshotSet(&snapshotSetID); err != nil {
 		return "", err
 	}
-	return snapshotSetID.String(), nil
+	s.snapshotSetGUID = snapshotSetID
+	s.snapshotSetID = snapshotSetID.String()
+	return s.snapshotSetID, nil
 }
 
 func (s *windowsVSSSnapshotSetSession) AddToSnapshotSet(source string) (string, error) {
@@ -215,12 +276,45 @@ func (s *windowsVSSSnapshotSetSession) AbortBackup() error {
 	return s.components.AbortBackup()
 }
 
+func (s *windowsVSSSnapshotSetSession) DeleteSnapshotSet(snapshotSetID string) (vssSnapshotSetDeleteResult, error) {
+	if snapshotSetID == "" || snapshotSetID != s.snapshotSetID {
+		return vssSnapshotSetDeleteResult{}, fmt.Errorf("refuse to delete VSS snapshot set %q; session created %q", snapshotSetID, s.snapshotSetID)
+	}
+	vtable := (*[windowsIVssBackupComponentsDeleteSnapshotsVTableIndex + 1]uintptr)(unsafe.Pointer(s.components.RawVTable))
+	deleteSnapshots := vtable[windowsIVssBackupComponentsDeleteSnapshotsVTableIndex]
+	if deleteSnapshots == 0 {
+		return vssSnapshotSetDeleteResult{}, fmt.Errorf("IVssBackupComponents.DeleteSnapshots procedure is unavailable")
+	}
+
+	var deletedSnapshots int32
+	var nondeletedSnapshotID ole.GUID
+	hresult, _, _ := syscall.SyscallN(
+		deleteSnapshots,
+		uintptr(unsafe.Pointer(s.components)),
+		uintptr(unsafe.Pointer(&s.snapshotSetGUID)),
+		uintptr(vss.VSS_OBJECT_SNAPSHOT_SET),
+		uintptr(1),
+		uintptr(unsafe.Pointer(&deletedSnapshots)),
+		uintptr(unsafe.Pointer(&nondeletedSnapshotID)),
+	)
+	result := vssSnapshotSetDeleteResult{DeletedSnapshots: int(deletedSnapshots)}
+	if nondeletedSnapshotID != (ole.GUID{}) {
+		result.NondeletedSnapshotID = nondeletedSnapshotID.String()
+	}
+	return result, vss.CreateVSSError("IVssBackupComponents.DeleteSnapshots(snapshot set)", hresult)
+}
+
 func (s *windowsVSSSnapshotSetSession) Release() {
 	if s.components == nil {
 		return
 	}
-	s.components.Release()
+	releaseGoVSSQueriedInterface(s.components.Release)
 	s.components = nil
+}
+
+func (s *windowsVSSSnapshotSetSession) ReleaseVSSSession() error {
+	s.Release()
+	return nil
 }
 
 var _ vssSnapshotSetSession = (*windowsVSSSnapshotSetSession)(nil)
@@ -231,10 +325,13 @@ func withWindowsVSSSnapshotSetSession(sources []string, run func(vssSnapshotSetS
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if err := ole.CoInitialize(0); err != nil {
+	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
 		return fmt.Errorf("initialize COM for VSS: %w", err)
 	}
 	defer ole.CoUninitialize()
+	if err := processWindowsVSSCOMSecurity.Initialize(); err != nil {
+		return err
+	}
 
 	session, err := newWindowsVSSSnapshotSetSession(sources)
 	if err != nil {

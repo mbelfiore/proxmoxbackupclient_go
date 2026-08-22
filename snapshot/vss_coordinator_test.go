@@ -22,6 +22,11 @@ type fakeVSSSnapshotSetSession struct {
 	propertiesErr error
 	completeErr   error
 	abortErr      error
+	deleteErr     error
+	releaseErr    error
+	deleteResult  vssSnapshotSetDeleteResult
+	deletedSetIDs []string
+	deleteCalls   int
 	releaseCalls  int
 	abortCalls    int
 	completeCalls int
@@ -32,6 +37,7 @@ func newFakeVSSSnapshotSetSession(sources ...string) *fakeVSSSnapshotSetSession 
 		snapshotSetID: "set-1",
 		snapshotIDs:   make(map[string]string, len(sources)),
 		properties:    make(map[string]vssSnapshotProperties, len(sources)),
+		deleteResult:  vssSnapshotSetDeleteResult{DeletedSnapshots: len(sources)},
 	}
 	for i, source := range sources {
 		suffix := strconv.Itoa(i + 1)
@@ -90,9 +96,21 @@ func (s *fakeVSSSnapshotSetSession) AbortBackup() error {
 	return s.abortErr
 }
 
+func (s *fakeVSSSnapshotSetSession) DeleteSnapshotSet(snapshotSetID string) (vssSnapshotSetDeleteResult, error) {
+	s.deleteCalls++
+	s.deletedSetIDs = append(s.deletedSetIDs, snapshotSetID)
+	s.events = append(s.events, "delete:"+snapshotSetID)
+	return s.deleteResult, s.deleteErr
+}
+
 func (s *fakeVSSSnapshotSetSession) Release() {
 	s.releaseCalls++
 	s.events = append(s.events, "release")
+}
+
+func (s *fakeVSSSnapshotSetSession) ReleaseVSSSession() error {
+	s.Release()
+	return s.releaseErr
 }
 
 func TestCoordinateVSSSnapshotSetOrdersOneMultiVolumeSet(t *testing.T) {
