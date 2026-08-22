@@ -264,12 +264,132 @@ func TestBuildWindowsDiskPlanNoMountVolumeGUID(t *testing.T) {
 	}
 }
 
-func TestVSSSourcesForPlanFailsClosedForMultipleVolumes(t *testing.T) {
-	plan := []WindowsDiskPlanSegment{
-		{Start: 0, End: 10, VSSSource: `C:\`},
-		{Start: 10, End: 20, VSSSource: `D:\`},
+func TestNormalizeWindowsVSSSource(t *testing.T) {
+	guidUpper := `\\?\Volume{3A886445-0000-0000-0000-100000000000}\`
+	guidLower := `\\?\Volume{3a886445-0000-0000-0000-100000000000}\`
+	tests := []struct {
+		name   string
+		source string
+		want   string
+		err    bool
+	}{
+		{"upper drive", `C:\`, `C:\`, false},
+		{"lower forward drive", `c:/`, `C:\`, false},
+		{"volume GUID hex case", guidUpper, guidLower, false},
+		{"empty", "", "", true},
+		{"whitespace", ` C:\`, "", true},
+		{"directory", `C:\data\`, "", true},
+		{"relative", `data`, "", true},
 	}
-	if _, err := vssSourcesForPlan(plan); err == nil {
-		t.Fatal("multiple VSS volumes must fail before snapshot side effects")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeWindowsVSSSource(tc.source)
+			if (err != nil) != tc.err || got != tc.want {
+				t.Fatalf("source=%q error=%v, want=%q error=%v", got, err, tc.want, tc.err)
+			}
+		})
+	}
+}
+
+func TestPrepareWindowsVSSPlanAcceptsCoordinatedMultiVolume(t *testing.T) {
+	systemGUID := `\\?\Volume{3a886445-0000-0000-0000-100000000000}\`
+	cGUID := `\\?\Volume{3a886445-0000-0000-0000-602200000000}\`
+	systemVolume := WindowsVolume{VolumeGUID: systemGUID}
+	cVolume := WindowsVolume{VolumeGUID: cGUID, MountPaths: []string{`C:\`}}
+	input := []WindowsDiskPlanSegment{
+		{Start: 0, End: 100, Raw: true},
+		{Start: 100, End: 200, Volume: &systemVolume, VSSSource: systemGUID},
+		{Start: 200, End: 300, Raw: true},
+		{Start: 300, End: 500, Volume: &cVolume, VSSSource: `c:/`},
+	}
+
+	plan, report, err := prepareWindowsVSSPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSources := []string{systemGUID, `C:\`}
+	if strings.Join(report.Sources, "|") != strings.Join(wantSources, "|") {
+		t.Fatalf("sources=%q want=%q", report.Sources, wantSources)
+	}
+	if len(report.Entries) != 2 || report.Entries[1].OriginalSource != `c:/` || report.Entries[1].NormalizedSource != `C:\` {
+		t.Fatalf("unexpected preflight report: %+v", report)
+	}
+	if plan[3].VSSSource != `C:\` {
+		t.Fatalf("normalized plan source=%q", plan[3].VSSSource)
+	}
+	if input[3].VSSSource != `c:/` {
+		t.Fatal("preflight mutated its input plan")
+	}
+
+	sources, err := vssSourcesForPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sources, "|") != strings.Join(wantSources, "|") {
+		t.Fatalf("vssSourcesForPlan=%q want=%q", sources, wantSources)
+	}
+}
+
+func TestPrepareWindowsVSSPlanPreservesSingleVolume(t *testing.T) {
+	volume := WindowsVolume{VolumeGUID: `\\?\Volume{3a886445-0000-0000-0000-602200000000}\`, MountPaths: []string{`C:\`}}
+	plan, report, err := prepareWindowsVSSPlan([]WindowsDiskPlanSegment{{Start: 0, End: 100, Volume: &volume, VSSSource: `C:\`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 1 || plan[0].VSSSource != `C:\` || len(report.Sources) != 1 || report.Sources[0] != `C:\` {
+		t.Fatalf("plan=%+v report=%+v", plan, report)
+	}
+}
+
+func TestPrepareWindowsVSSPlanDeduplicatesEquivalentSource(t *testing.T) {
+	volume := WindowsVolume{VolumeGUID: `\\?\Volume{3a886445-0000-0000-0000-602200000000}\`, MountPaths: []string{`C:\`}}
+	plan := []WindowsDiskPlanSegment{
+		{Start: 0, End: 100, Volume: &volume, VSSSource: `c:/`},
+		{Start: 100, End: 200, Volume: &volume, VSSSource: `C:\`},
+	}
+	normalized, report, err := prepareWindowsVSSPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Sources) != 1 || report.Sources[0] != `C:\` || normalized[0].VSSSource != `C:\` || normalized[1].VSSSource != `C:\` {
+		t.Fatalf("normalized=%+v report=%+v", normalized, report)
+	}
+}
+
+func TestPrepareWindowsVSSPlanFailClosed(t *testing.T) {
+	guidA := `\\?\Volume{3a886445-0000-0000-0000-100000000000}\`
+	guidB := `\\?\Volume{3a886445-0000-0000-0000-602200000000}\`
+	volumeA := WindowsVolume{VolumeGUID: guidA}
+	volumeB := WindowsVolume{VolumeGUID: guidB}
+	tests := []struct {
+		name string
+		plan []WindowsDiskPlanSegment
+	}{
+		{"invalid range", []WindowsDiskPlanSegment{{Start: 10, End: 10, Raw: true}}},
+		{"raw carries source", []WindowsDiskPlanSegment{{Start: 0, End: 10, Raw: true, VSSSource: `C:\`}}},
+		{"missing volume", []WindowsDiskPlanSegment{{Start: 0, End: 10, VSSSource: `C:\`}}},
+		{"malformed volume GUID", []WindowsDiskPlanSegment{{Start: 0, End: 10, Volume: &WindowsVolume{VolumeGUID: "bad"}, VSSSource: `C:\`}}},
+		{"GUID source differs from volume", []WindowsDiskPlanSegment{{Start: 0, End: 10, Volume: &volumeA, VSSSource: guidB}}},
+		{"ambiguous source", []WindowsDiskPlanSegment{
+			{Start: 0, End: 10, Volume: &volumeA, VSSSource: `C:\`},
+			{Start: 10, End: 20, Volume: &volumeB, VSSSource: `c:/`},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := prepareWindowsVSSPlan(tc.plan); err == nil {
+				t.Fatal("unsafe Windows VSS plan must fail before snapshot side effects")
+			}
+		})
+	}
+}
+
+func TestPrepareWindowsVSSPlanAllowsNoVSSSources(t *testing.T) {
+	plan, report, err := prepareWindowsVSSPlan([]WindowsDiskPlanSegment{{Start: 0, End: 100, Raw: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 1 || len(report.Sources) != 0 || len(report.Entries) != 0 {
+		t.Fatalf("plan=%+v report=%+v", plan, report)
 	}
 }

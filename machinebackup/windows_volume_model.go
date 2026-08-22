@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"unicode/utf16"
 )
 
@@ -114,6 +115,19 @@ type WindowsDiskPlanSegment struct {
 	VSSSource string
 }
 
+type WindowsVSSPreflightEntry struct {
+	SegmentStart     uint64
+	SegmentEnd       uint64
+	VolumeGUID       string
+	OriginalSource   string
+	NormalizedSource string
+}
+
+type WindowsVSSPreflightReport struct {
+	Sources []string
+	Entries []WindowsVSSPreflightEntry
+}
+
 func parseUTF16MultiSZ(buffer []uint16, used uint32) ([]string, error) {
 	if used == 0 || uint64(used) > uint64(len(buffer)) {
 		return nil, fmt.Errorf("invalid MULTI_SZ length %d for buffer %d", used, len(buffer))
@@ -214,6 +228,36 @@ func isCanonicalWindowsVolumeGUIDRoot(path string) bool {
 	return true
 }
 
+func normalizeWindowsVolumeGUIDRoot(path string) (string, error) {
+	if !isCanonicalWindowsVolumeGUIDRoot(path) {
+		return "", fmt.Errorf("Windows volume GUID root %q is not canonical", path)
+	}
+	const prefix = `\\?\Volume{`
+	const suffix = `}\`
+	guid := strings.ToLower(path[len(prefix) : len(path)-len(suffix)])
+	return prefix + guid + suffix, nil
+}
+
+func normalizeWindowsVSSSource(source string) (string, error) {
+	if source == "" {
+		return "", fmt.Errorf("Windows VSS source is empty")
+	}
+	if strings.TrimSpace(source) != source {
+		return "", fmt.Errorf("Windows VSS source %q has surrounding whitespace", source)
+	}
+	if classifyWindowsMountPath(source) == WindowsDriveRootMount {
+		letter := source[0]
+		if letter >= 'a' && letter <= 'z' {
+			letter -= 'a' - 'A'
+		}
+		return string([]byte{letter, ':', '\\'}), nil
+	}
+	if isCanonicalWindowsVolumeGUIDRoot(source) {
+		return normalizeWindowsVolumeGUIDRoot(source)
+	}
+	return "", fmt.Errorf("Windows VSS source %q is not a drive root or canonical volume GUID root", source)
+}
+
 func supportedVSSSource(volume WindowsVolume) (string, error) {
 	driveRoots := make([]string, 0)
 	for _, path := range volume.MountPaths {
@@ -232,6 +276,62 @@ func supportedVSSSource(volume WindowsVolume) (string, error) {
 	}
 	sort.Strings(driveRoots)
 	return driveRoots[0], nil
+}
+
+func prepareWindowsVSSPlan(plan []WindowsDiskPlanSegment) ([]WindowsDiskPlanSegment, WindowsVSSPreflightReport, error) {
+	normalizedPlan := append([]WindowsDiskPlanSegment(nil), plan...)
+	report := WindowsVSSPreflightReport{
+		Sources: make([]string, 0),
+		Entries: make([]WindowsVSSPreflightEntry, 0),
+	}
+	volumeBySource := make(map[string]string)
+
+	for i, segment := range normalizedPlan {
+		if segment.End <= segment.Start {
+			return nil, WindowsVSSPreflightReport{}, fmt.Errorf("Windows disk plan segment %d has invalid range %d..%d", i, segment.Start, segment.End)
+		}
+		if segment.Raw {
+			if segment.Volume != nil || segment.VSSSource != "" {
+				return nil, WindowsVSSPreflightReport{}, fmt.Errorf("raw Windows disk plan segment %d unexpectedly contains VSS metadata", i)
+			}
+			continue
+		}
+		if segment.Volume == nil {
+			return nil, WindowsVSSPreflightReport{}, fmt.Errorf("Windows VSS disk plan segment %d has no volume mapping", i)
+		}
+
+		volumeGUID, err := normalizeWindowsVolumeGUIDRoot(segment.Volume.VolumeGUID)
+		if err != nil {
+			return nil, WindowsVSSPreflightReport{}, fmt.Errorf("Windows VSS disk plan segment %d: %w", i, err)
+		}
+		source, err := normalizeWindowsVSSSource(segment.VSSSource)
+		if err != nil {
+			return nil, WindowsVSSPreflightReport{}, fmt.Errorf("Windows VSS disk plan segment %d: %w", i, err)
+		}
+		if isCanonicalWindowsVolumeGUIDRoot(source) && source != volumeGUID {
+			return nil, WindowsVSSPreflightReport{}, fmt.Errorf("Windows VSS disk plan segment %d source %q differs from volume %q", i, source, volumeGUID)
+		}
+
+		if existingVolume, exists := volumeBySource[source]; exists {
+			if existingVolume != volumeGUID {
+				return nil, WindowsVSSPreflightReport{}, fmt.Errorf("Windows VSS source %q ambiguously maps to volumes %q and %q", source, existingVolume, volumeGUID)
+			}
+		} else {
+			volumeBySource[source] = volumeGUID
+			report.Sources = append(report.Sources, source)
+		}
+
+		report.Entries = append(report.Entries, WindowsVSSPreflightEntry{
+			SegmentStart:     segment.Start,
+			SegmentEnd:       segment.End,
+			VolumeGUID:       volumeGUID,
+			OriginalSource:   segment.VSSSource,
+			NormalizedSource: source,
+		})
+		normalizedPlan[i].VSSSource = source
+	}
+
+	return normalizedPlan, report, nil
 }
 
 func buildValidatedWindowsDiskPlan(diskSize uint64, style DiskLayoutStyle, targetDisk uint32, partitions []DiskExtent, identities []WindowsPartitionIdentity, volumes []WindowsVolume) ([]WindowsDiskPlanSegment, error) {
@@ -313,17 +413,9 @@ func buildWindowsDiskPlan(diskSize uint64, style DiskLayoutStyle, targetDisk uin
 }
 
 func vssSourcesForPlan(plan []WindowsDiskPlanSegment) ([]string, error) {
-	sources := make([]string, 0, 1)
-	seen := make(map[string]bool)
-	for _, segment := range plan {
-		if segment.Raw || seen[segment.VSSSource] {
-			continue
-		}
-		seen[segment.VSSSource] = true
-		sources = append(sources, segment.VSSSource)
+	_, report, err := prepareWindowsVSSPlan(plan)
+	if err != nil {
+		return nil, err
 	}
-	if len(sources) > 1 {
-		return nil, fmt.Errorf("multiple VSS source volumes are unsupported by the current snapshot wrapper")
-	}
-	return sources, nil
+	return report.Sources, nil
 }

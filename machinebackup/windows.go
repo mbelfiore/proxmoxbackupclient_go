@@ -336,15 +336,23 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	plan, preflight, err := prepareWindowsVSSPlan(plan)
+	if err != nil {
+		return 0, fmt.Errorf("Windows backup preflight for PhysicalDrive%d: %w", index, err)
+	}
+	fmt.Printf("Windows backup preflight PhysicalDrive%d: %d VSS source(s)\n", index, len(preflight.Sources))
+	for _, entry := range preflight.Entries {
+		fmt.Printf("VSS segment %d..%d volume=%q source=%q normalized=%q\n", entry.SegmentStart, entry.SegmentEnd, entry.VolumeGUID, entry.OriginalSource, entry.NormalizedSource)
+	}
 	for _, segment := range plan {
 		parts = append(parts, Partition{StartByte: segment.Start, EndByte: segment.End, RequiresVSS: !segment.Raw, VSSSource: segment.VSSSource})
 	}
-	snapshotPaths, err := vssSourcesForPlan(plan)
-	if err != nil {
-		return 0, err
-	}
+	snapshotPaths := preflight.Sources
 
 	return total, snapshot.CreateVSSSnapshot(snapshotPaths, func(snapshots map[string]snapshot.SnapShot) error {
+		if err := validateWindowsSnapshotMapping(snapshotPaths, snapshots); err != nil {
+			return err
+		}
 
 		/*hostname, err := os.Hostname()
 		if err != nil {
