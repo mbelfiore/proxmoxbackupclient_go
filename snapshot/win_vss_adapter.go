@@ -5,6 +5,7 @@ package snapshot
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -223,3 +224,21 @@ func (s *windowsVSSSnapshotSetSession) Release() {
 }
 
 var _ vssSnapshotSetSession = (*windowsVSSSnapshotSetSession)(nil)
+
+func withWindowsVSSSnapshotSetSession(sources []string, run func(vssSnapshotSetSession) error) error {
+	if run == nil {
+		return fmt.Errorf("VSS snapshot-set session callback is nil")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := ole.CoInitialize(0); err != nil {
+		return fmt.Errorf("initialize COM for VSS: %w", err)
+	}
+	defer ole.CoUninitialize()
+
+	session, err := newWindowsVSSSnapshotSetSession(sources)
+	if err != nil {
+		return err
+	}
+	return run(session)
+}

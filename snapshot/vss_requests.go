@@ -65,10 +65,11 @@ func mapVSSSnapshotsToRequests(requests []preparedVSSSnapshotRequest, sourceSnap
 		}
 
 		mapped[request.key] = SnapShot{
-			FullPath:   filepath.Join(root, request.subPath),
-			Id:         sourceSnapshot.Id,
-			ObjectPath: sourceSnapshot.ObjectPath,
-			Valid:      sourceSnapshot.Valid,
+			FullPath:      filepath.Join(root, request.subPath),
+			Id:            sourceSnapshot.Id,
+			SnapshotSetID: sourceSnapshot.SnapshotSetID,
+			ObjectPath:    sourceSnapshot.ObjectPath,
+			Valid:         sourceSnapshot.Valid,
 		}
 	}
 

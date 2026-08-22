@@ -116,9 +116,10 @@ func coordinateVSSSnapshotSet(sources []string, session vssSnapshotSetSession, b
 			return fmt.Errorf("VSS source %q returned an empty device object path", source)
 		}
 		snapshots[source] = SnapShot{
-			Id:         snapshotID,
-			ObjectPath: properties.DeviceObjectPath,
-			Valid:      true,
+			Id:            snapshotID,
+			SnapshotSetID: properties.SnapshotSetID,
+			ObjectPath:    properties.DeviceObjectPath,
+			Valid:         true,
 		}
 	}
 

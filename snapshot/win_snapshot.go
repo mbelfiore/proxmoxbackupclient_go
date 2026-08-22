@@ -8,9 +8,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
-
-	ole "github.com/go-ole/go-ole"
 )
 
 func SymlinkSnapshot(symlinkPath string, id string, deviceObjectPath string) (string, error) {
@@ -71,19 +68,10 @@ func CreateVSSSnapshot(paths []string, backup_callback func(sn map[string]SnapSh
 		return err
 	}
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	if err := ole.CoInitialize(0); err != nil {
-		return fmt.Errorf("initialize COM for VSS: %w", err)
-	}
-	defer ole.CoUninitialize()
-
-	session, err := newWindowsVSSSnapshotSetSession(sources)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Creating coordinated VSS snapshot set...\n")
-	return createVSSSnapshotFromRequests(requests, sources, session, filepath.Join(appDataFolder, "VSS"), SymlinkSnapshot, backup_callback)
+	return withWindowsVSSSnapshotSetSession(sources, func(session vssSnapshotSetSession) error {
+		fmt.Printf("Creating coordinated VSS snapshot set...\n")
+		return createVSSSnapshotFromRequests(requests, sources, session, filepath.Join(appDataFolder, "VSS"), SymlinkSnapshot, backup_callback)
+	})
 
 }
 

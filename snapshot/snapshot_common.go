@@ -3,10 +3,11 @@ package snapshot
 import "fmt"
 
 type SnapShot struct {
-	FullPath   string
-	Id         string
-	ObjectPath string
-	Valid      bool
+	FullPath      string
+	Id            string
+	SnapshotSetID string
+	ObjectPath    string
+	Valid         bool
 }
 
 func isCanonicalWindowsVolumeGUIDRoot(path string) bool {
