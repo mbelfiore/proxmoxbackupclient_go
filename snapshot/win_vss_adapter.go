@@ -13,11 +13,69 @@ import (
 
 	ole "github.com/go-ole/go-ole"
 	vss "github.com/st-matskevich/go-vss"
+	"golang.org/x/sys/windows"
 )
 
 const windowsVSSOperationTimeout = 180 * 1000
 const windowsVSSFreeSnapshotPropertiesProcedure = "VssFreeSnapshotPropertiesInternal"
 const windowsIVssBackupComponentsDeleteSnapshotsVTableIndex = 39
+const windowsVSSEObjectNotFound = uint32(0x80042308)
+
+const (
+	windowsOle32DLL  = "Ole32.dll"
+	windowsVSSAPIDLL = "VssApi.dll"
+)
+
+// windowsIVssBackupComponentsVTableThroughDeleteSnapshots mirrors the
+// IVssBackupComponents declaration in the Windows vsbackup.h ABI through
+// DeleteSnapshots. It also matches go-vss v0.3.3's
+// IVssBackupComponentsVTable: three IUnknown slots precede 36 VSS methods, so
+// DeleteSnapshots is slot 39 on every Windows architecture supported here.
+type windowsIVssBackupComponentsVTableThroughDeleteSnapshots struct {
+	ole.IUnknownVtbl
+	getWriterComponentsCount      uintptr
+	getWriterComponents           uintptr
+	initializeForBackup           uintptr
+	setBackupState                uintptr
+	initializeForRestore          uintptr
+	setRestoreState               uintptr
+	gatherWriterMetadata          uintptr
+	getWriterMetadataCount        uintptr
+	getWriterMetadata             uintptr
+	freeWriterMetadata            uintptr
+	addComponent                  uintptr
+	prepareForBackup              uintptr
+	abortBackup                   uintptr
+	gatherWriterStatus            uintptr
+	getWriterStatusCount          uintptr
+	freeWriterStatus              uintptr
+	getWriterStatus               uintptr
+	setBackupSucceeded            uintptr
+	setBackupOptions              uintptr
+	setSelectedForRestore         uintptr
+	setRestoreOptions             uintptr
+	setAdditionalRestores         uintptr
+	setPreviousBackupStamp        uintptr
+	saveAsXML                     uintptr
+	backupComplete                uintptr
+	addAlternativeLocationMapping uintptr
+	addRestoreSubcomponent        uintptr
+	setFileRestoreStatus          uintptr
+	addNewTarget                  uintptr
+	setRangesFilePath             uintptr
+	preRestore                    uintptr
+	postRestore                   uintptr
+	setContext                    uintptr
+	startSnapshotSet              uintptr
+	addToSnapshotSet              uintptr
+	doSnapshotSet                 uintptr
+	deleteSnapshots               uintptr
+}
+
+const windowsIVssBackupComponentsDeleteSnapshotsComputedIndex = int(unsafe.Offsetof(windowsIVssBackupComponentsVTableThroughDeleteSnapshots{}.deleteSnapshots) / unsafe.Sizeof(uintptr(0)))
+
+var _ [windowsIVssBackupComponentsDeleteSnapshotsVTableIndex - windowsIVssBackupComponentsDeleteSnapshotsComputedIndex]struct{}
+var _ [windowsIVssBackupComponentsDeleteSnapshotsComputedIndex - windowsIVssBackupComponentsDeleteSnapshotsVTableIndex]struct{}
 
 const (
 	windowsRPCAuthnLevelPktPrivacy = uint32(6)
@@ -26,6 +84,20 @@ const (
 )
 
 var windowsRPCAuthServicesDefault = ^uintptr(0)
+
+type windowsSystemProcedure interface {
+	Call(a ...uintptr) (uintptr, uintptr, error)
+}
+
+type windowsSystemProcedureResolver func(dllName string, procedureName string) (windowsSystemProcedure, error)
+
+func resolveWindowsSystemProcedure(dllName string, procedureName string) (windowsSystemProcedure, error) {
+	procedure := windows.NewLazySystemDLL(dllName).NewProc(procedureName)
+	if err := procedure.Find(); err != nil {
+		return nil, fmt.Errorf("resolve system procedure %s!%s: %w", dllName, procedureName, err)
+	}
+	return procedure, nil
+}
 
 type windowsVSSCOMSecurityInitializer struct {
 	once       sync.Once
@@ -44,8 +116,15 @@ func (i *windowsVSSCOMSecurityInitializer) Initialize() error {
 }
 
 func initializeWindowsVSSCOMSecurity() error {
-	procedure := syscall.NewLazyDLL("Ole32.dll").NewProc("CoInitializeSecurity")
-	if err := procedure.Find(); err != nil {
+	return initializeWindowsVSSCOMSecurityWithResolver(resolveWindowsSystemProcedure)
+}
+
+func initializeWindowsVSSCOMSecurityWithResolver(resolve windowsSystemProcedureResolver) error {
+	if resolve == nil {
+		return fmt.Errorf("VSS COM security system DLL resolver is nil")
+	}
+	procedure, err := resolve(windowsOle32DLL, "CoInitializeSecurity")
+	if err != nil {
 		return fmt.Errorf("resolve CoInitializeSecurity: %w", err)
 	}
 	hresult, _, _ := procedure.Call(
@@ -68,10 +147,17 @@ func initializeWindowsVSSCOMSecurity() error {
 var processWindowsVSSCOMSecurity = &windowsVSSCOMSecurityInitializer{initialize: initializeWindowsVSSCOMSecurity}
 
 func releaseGoVSSQueriedInterface(release func() int32) {
-	// go-vss v0.3.3 keeps both the original IUnknown reference and the
-	// QueryInterface reference. The adapter owns and releases both.
-	release()
-	release()
+	if release == nil {
+		return
+	}
+	// go-vss v0.3.3 receives one caller-owned interface reference from
+	// CreateVssBackupComponents or an IVssAsync-producing VSS method, then
+	// calls QueryInterface for the same interface and returns that pointer.
+	// QueryInterface adds the second caller-owned reference. Releasing through
+	// the returned pointer balances both, but only while the object is alive.
+	if remaining := release(); remaining > 0 {
+		release()
+	}
 }
 
 type windowsVSSSnapshotPropertiesCleanup func(*vss.VssSnapshotProperties)
@@ -92,8 +178,15 @@ type windowsVSSSnapshotSetSession struct {
 }
 
 func resolveWindowsVSSSnapshotPropertiesCleanup() (windowsVSSSnapshotPropertiesCleanup, error) {
-	procedure := syscall.NewLazyDLL("VssApi.dll").NewProc(windowsVSSFreeSnapshotPropertiesProcedure)
-	if err := procedure.Find(); err != nil {
+	return resolveWindowsVSSSnapshotPropertiesCleanupWithResolver(resolveWindowsSystemProcedure)
+}
+
+func resolveWindowsVSSSnapshotPropertiesCleanupWithResolver(resolve windowsSystemProcedureResolver) (windowsVSSSnapshotPropertiesCleanup, error) {
+	if resolve == nil {
+		return nil, fmt.Errorf("VSS snapshot properties system DLL resolver is nil")
+	}
+	procedure, err := resolve(windowsVSSAPIDLL, windowsVSSFreeSnapshotPropertiesProcedure)
+	if err != nil {
 		return nil, fmt.Errorf("resolve VSS snapshot properties cleanup procedure %q: %w", windowsVSSFreeSnapshotPropertiesProcedure, err)
 	}
 	return func(properties *vss.VssSnapshotProperties) {
@@ -276,12 +369,19 @@ func (s *windowsVSSSnapshotSetSession) AbortBackup() error {
 	return s.components.AbortBackup()
 }
 
+func windowsVSSDeleteSnapshotsError(hresult uintptr) error {
+	if uint32(hresult) == windowsVSSEObjectNotFound {
+		return fmt.Errorf("%w: HRESULT %#x", errVSSSnapshotSetNotFound, uint32(hresult))
+	}
+	return vss.CreateVSSError("IVssBackupComponents.DeleteSnapshots(snapshot set)", hresult)
+}
+
 func (s *windowsVSSSnapshotSetSession) DeleteSnapshotSet(snapshotSetID string) (vssSnapshotSetDeleteResult, error) {
 	if snapshotSetID == "" || snapshotSetID != s.snapshotSetID {
 		return vssSnapshotSetDeleteResult{}, fmt.Errorf("refuse to delete VSS snapshot set %q; session created %q", snapshotSetID, s.snapshotSetID)
 	}
-	vtable := (*[windowsIVssBackupComponentsDeleteSnapshotsVTableIndex + 1]uintptr)(unsafe.Pointer(s.components.RawVTable))
-	deleteSnapshots := vtable[windowsIVssBackupComponentsDeleteSnapshotsVTableIndex]
+	vtable := (*windowsIVssBackupComponentsVTableThroughDeleteSnapshots)(unsafe.Pointer(s.components.RawVTable))
+	deleteSnapshots := vtable.deleteSnapshots
 	if deleteSnapshots == 0 {
 		return vssSnapshotSetDeleteResult{}, fmt.Errorf("IVssBackupComponents.DeleteSnapshots procedure is unavailable")
 	}
@@ -301,7 +401,7 @@ func (s *windowsVSSSnapshotSetSession) DeleteSnapshotSet(snapshotSetID string) (
 	if nondeletedSnapshotID != (ole.GUID{}) {
 		result.NondeletedSnapshotID = nondeletedSnapshotID.String()
 	}
-	return result, vss.CreateVSSError("IVssBackupComponents.DeleteSnapshots(snapshot set)", hresult)
+	return result, windowsVSSDeleteSnapshotsError(hresult)
 }
 
 func (s *windowsVSSSnapshotSetSession) Release() {

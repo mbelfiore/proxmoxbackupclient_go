@@ -5,8 +5,17 @@ package snapshot
 
 import (
 	"errors"
+	"syscall"
 	"testing"
 )
+
+type fakeWindowsSystemProcedure struct {
+	call func(...uintptr) (uintptr, uintptr, error)
+}
+
+func (p fakeWindowsSystemProcedure) Call(arguments ...uintptr) (uintptr, uintptr, error) {
+	return p.call(arguments...)
+}
 
 type fakeWindowsVSSSnapshotProperties struct {
 	snapshotID       string
@@ -116,5 +125,83 @@ func TestReleaseGoVSSQueriedInterfaceBalancesBothReferences(t *testing.T) {
 	})
 	if releaseCalls != 2 {
 		t.Fatalf("release calls=%d, want exactly 2", releaseCalls)
+	}
+}
+
+func TestReleaseGoVSSQueriedInterfaceStopsWhenFirstReleaseReachesZero(t *testing.T) {
+	releaseCalls := 0
+	releaseGoVSSQueriedInterface(func() int32 {
+		releaseCalls++
+		return 0
+	})
+	if releaseCalls != 1 {
+		t.Fatalf("release calls=%d, want exactly 1", releaseCalls)
+	}
+}
+
+func TestWindowsVSSResolversRequestSystemDLLs(t *testing.T) {
+	t.Run("COM security", func(t *testing.T) {
+		calls := 0
+		err := initializeWindowsVSSCOMSecurityWithResolver(func(dllName string, procedureName string) (windowsSystemProcedure, error) {
+			calls++
+			if dllName != windowsOle32DLL || procedureName != "CoInitializeSecurity" {
+				t.Fatalf("resolved %s!%s", dllName, procedureName)
+			}
+			return fakeWindowsSystemProcedure{call: func(...uintptr) (uintptr, uintptr, error) {
+				return 0, 0, nil
+			}}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 {
+			t.Fatalf("resolver calls=%d, want 1", calls)
+		}
+	})
+
+	t.Run("snapshot properties cleanup", func(t *testing.T) {
+		resolverCalls := 0
+		procedureCalls := 0
+		cleanup, err := resolveWindowsVSSSnapshotPropertiesCleanupWithResolver(func(dllName string, procedureName string) (windowsSystemProcedure, error) {
+			resolverCalls++
+			if dllName != windowsVSSAPIDLL || procedureName != windowsVSSFreeSnapshotPropertiesProcedure {
+				t.Fatalf("resolved %s!%s", dllName, procedureName)
+			}
+			return fakeWindowsSystemProcedure{call: func(...uintptr) (uintptr, uintptr, error) {
+				procedureCalls++
+				return 0, 0, nil
+			}}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanup(nil)
+		if resolverCalls != 1 || procedureCalls != 1 {
+			t.Fatalf("resolver calls=%d procedure calls=%d, want 1 each", resolverCalls, procedureCalls)
+		}
+	})
+}
+
+func TestResolveWindowsSystemProcedure(t *testing.T) {
+	procedure, err := resolveWindowsSystemProcedure("Kernel32.dll", "GetCurrentProcessId")
+	if err != nil {
+		t.Fatal(err)
+	}
+	processID, _, callErr := procedure.Call()
+	if callErr != syscall.Errno(0) || processID == 0 {
+		t.Fatalf("GetCurrentProcessId result=%d error=%v", processID, callErr)
+	}
+}
+
+func TestWindowsDeleteSnapshotsVTableIndex(t *testing.T) {
+	if windowsIVssBackupComponentsDeleteSnapshotsComputedIndex != windowsIVssBackupComponentsDeleteSnapshotsVTableIndex {
+		t.Fatalf("DeleteSnapshots vtable index=%d, want %d", windowsIVssBackupComponentsDeleteSnapshotsComputedIndex, windowsIVssBackupComponentsDeleteSnapshotsVTableIndex)
+	}
+}
+
+func TestWindowsVSSDeleteSnapshotsErrorRecognizesObjectNotFound(t *testing.T) {
+	err := windowsVSSDeleteSnapshotsError(uintptr(windowsVSSEObjectNotFound))
+	if !errors.Is(err, errVSSSnapshotSetNotFound) {
+		t.Fatalf("error=%v, want VSS_E_OBJECT_NOT_FOUND sentinel", err)
 	}
 }

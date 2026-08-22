@@ -10,6 +10,8 @@ type vssSnapshotSetDeleteResult struct {
 	NondeletedSnapshotID string
 }
 
+var errVSSSnapshotSetNotFound = errors.New("VSS snapshot set not found")
+
 type vssSnapshotSetCleanupSession interface {
 	vssSnapshotSetSession
 	DeleteSnapshotSet(snapshotSetID string) (vssSnapshotSetDeleteResult, error)
@@ -18,16 +20,18 @@ type vssSnapshotSetCleanupSession interface {
 
 type delayedVSSSnapshotSetRelease struct {
 	vssSnapshotSetCleanupSession
-	snapshotSetID   string
-	snapshotCreated bool
-	completed       bool
-	aborted         bool
+	snapshotSetID      string
+	snapshotSetStarted bool
+	snapshotCreated    bool
+	completed          bool
+	aborted            bool
 }
 
 func (s *delayedVSSSnapshotSetRelease) StartSnapshotSet() (string, error) {
 	id, err := s.vssSnapshotSetCleanupSession.StartSnapshotSet()
 	if err == nil {
 		s.snapshotSetID = id
+		s.snapshotSetStarted = true
 	}
 	return id, err
 }
@@ -58,13 +62,20 @@ func (s *delayedVSSSnapshotSetRelease) Release() {
 	// delayed until the exact snapshot set has been deleted and validated.
 }
 
-func validateVSSSnapshotSetDelete(result vssSnapshotSetDeleteResult, expectedSnapshots int, deleteErr error) error {
+func validateVSSSnapshotSetDelete(result vssSnapshotSetDeleteResult, expectedSnapshots int, requireExactCount bool, deleteErr error) error {
+	if errors.Is(deleteErr, errVSSSnapshotSetNotFound) {
+		// A failed DoSnapshotSet may leave no object behind. In that case there
+		// is no residual snapshot set to clean up.
+		return nil
+	}
 	var cleanupErr error
 	if deleteErr != nil {
 		cleanupErr = fmt.Errorf("delete VSS snapshot set: %w", deleteErr)
 	}
-	if result.DeletedSnapshots != expectedSnapshots {
+	if requireExactCount && result.DeletedSnapshots != expectedSnapshots {
 		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("deleted %d VSS snapshots, expected %d", result.DeletedSnapshots, expectedSnapshots))
+	} else if !requireExactCount && (result.DeletedSnapshots < 0 || result.DeletedSnapshots > expectedSnapshots) {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("deleted %d VSS snapshots after partial creation, expected between 0 and %d", result.DeletedSnapshots, expectedSnapshots))
 	}
 	if result.NondeletedSnapshotID != "" {
 		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("VSS snapshot %q was not deleted", result.NondeletedSnapshotID))
@@ -86,12 +97,12 @@ func coordinateVSSSnapshotSetWithCleanup(sources []string, session vssSnapshotSe
 	}
 	delayed := &delayedVSSSnapshotSetRelease{vssSnapshotSetCleanupSession: cleanupSession}
 	defer func() {
-		if returnErr != nil && !delayed.completed && !delayed.aborted {
+		if returnErr != nil && delayed.snapshotSetStarted && !delayed.completed && !delayed.aborted {
 			returnErr = errors.Join(returnErr, delayed.AbortBackup())
 		}
-		if delayed.snapshotCreated {
+		if delayed.snapshotSetStarted {
 			result, deleteErr := cleanupSession.DeleteSnapshotSet(delayed.snapshotSetID)
-			returnErr = errors.Join(returnErr, validateVSSSnapshotSetDelete(result, len(uniqueSources), deleteErr))
+			returnErr = errors.Join(returnErr, validateVSSSnapshotSetDelete(result, len(uniqueSources), delayed.snapshotCreated, deleteErr))
 		}
 		returnErr = errors.Join(returnErr, cleanupSession.ReleaseVSSSession())
 	}()

@@ -158,3 +158,21 @@ func TestVSSRequestMappingFailuresFailClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateVSSSnapshotFromRequestsNilCallbackUsesDeterministicCleanup(t *testing.T) {
+	sources := []string{`C:\`}
+	wantReleaseErr := errors.New("release failed")
+	session := newFakeVSSSnapshotSetSession(sources...)
+	session.releaseErr = wantReleaseErr
+
+	err := createVSSSnapshotFromRequests(nil, sources, session, `C:\snapshot-links`, deterministicSnapshotSymlink, nil)
+	if err == nil || !errors.Is(err, wantReleaseErr) {
+		t.Fatalf("error=%v, want nil callback and release errors", err)
+	}
+	if session.deleteCalls != 0 || session.abortCalls != 0 || session.releaseCalls != 1 {
+		t.Fatalf("delete=%d abort=%d release=%d, want only deterministic release", session.deleteCalls, session.abortCalls, session.releaseCalls)
+	}
+	if wantEvents := []string{"release"}; !reflect.DeepEqual(session.events, wantEvents) {
+		t.Fatalf("events=%q, want %q", session.events, wantEvents)
+	}
+}

@@ -78,7 +78,7 @@ func mapVSSSnapshotsToRequests(requests []preparedVSSSnapshotRequest, sourceSnap
 
 func createVSSSnapshotFromRequests(requests []preparedVSSSnapshotRequest, sources []string, session vssSnapshotSetSession, symlinkPath string, symlink vssSnapshotSymlink, backupCallback func(map[string]SnapShot) error) error {
 	if backupCallback == nil {
-		return coordinateVSSSnapshotSet(sources, session, nil)
+		return coordinateVSSSnapshotSetWithCleanup(sources, session, nil)
 	}
 
 	return coordinateVSSSnapshotSetWithCleanup(sources, session, func(sourceSnapshots map[string]SnapShot) error {

@@ -176,12 +176,14 @@ func TestCoordinateVSSSnapshotSetProbePropagatesCleanupErrors(t *testing.T) {
 		session.failAddCall = 2
 		session.addErr = operationErr
 		session.abortErr = cleanupErr
+		session.deleteResult = vssSnapshotSetDeleteResult{}
+		session.deleteErr = errVSSSnapshotSetNotFound
 
 		err := coordinateVSSSnapshotSetProbe(sources, session, func([]VSSSnapshotSetProbeResult) error { return nil })
 		if !errors.Is(err, operationErr) || !errors.Is(err, cleanupErr) {
 			t.Fatalf("error=%v, want operation and cleanup errors", err)
 		}
-		wantEvents := []string{"start", `add:C:\`, `add:D:\`, "abort", "release"}
+		wantEvents := []string{"start", `add:C:\`, `add:D:\`, "abort", "delete:set-1", "release"}
 		if !reflect.DeepEqual(session.events, wantEvents) {
 			t.Fatalf("events=%q, want %q", session.events, wantEvents)
 		}
@@ -263,21 +265,97 @@ func TestCoordinateVSSSnapshotSetProbeValidatesDeleteResultAndReleaseErrors(t *t
 	}
 }
 
-func TestCoordinateVSSSnapshotSetProbeDoesNotDeleteBeforeSnapshotCreation(t *testing.T) {
+func TestCoordinateVSSSnapshotSetProbeCleansUpFailedDoWhenSetDoesNotExist(t *testing.T) {
 	sources := []string{`C:\`, `D:\`}
 	wantErr := errors.New("snapshot creation failed")
 	session := newFakeVSSSnapshotSetSession(sources...)
 	session.doErr = wantErr
+	session.deleteResult = vssSnapshotSetDeleteResult{}
+	session.deleteErr = errVSSSnapshotSetNotFound
 
 	err := coordinateVSSSnapshotSetProbe(sources, session, func([]VSSSnapshotSetProbeResult) error { return nil })
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error=%v, want %v", err, wantErr)
 	}
-	if session.deleteCalls != 0 {
-		t.Fatalf("delete calls=%d, want 0", session.deleteCalls)
+	if session.deleteCalls != 1 || !reflect.DeepEqual(session.deletedSetIDs, []string{"set-1"}) {
+		t.Fatalf("delete calls=%d set IDs=%q, want exact created set", session.deleteCalls, session.deletedSetIDs)
 	}
-	wantTail := []string{"do", "abort", "release"}
+	wantTail := []string{"do", "abort", "delete:set-1", "release"}
 	if got := session.events[len(session.events)-len(wantTail):]; !reflect.DeepEqual(got, wantTail) {
 		t.Fatalf("cleanup events=%q, want %q", got, wantTail)
+	}
+}
+
+func TestCoordinateVSSSnapshotSetProbeCleansUpPartiallyCreatedFailedDo(t *testing.T) {
+	sources := []string{`C:\`, `D:\`}
+	wantErr := errors.New("snapshot creation partially failed")
+	session := newFakeVSSSnapshotSetSession(sources...)
+	session.doErr = wantErr
+	session.deleteResult = vssSnapshotSetDeleteResult{DeletedSnapshots: 1}
+
+	err := coordinateVSSSnapshotSetProbe(sources, session, func([]VSSSnapshotSetProbeResult) error { return nil })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error=%v, want only operation error %v", err, wantErr)
+	}
+	wantTail := []string{"do", "abort", "delete:set-1", "release"}
+	if got := session.events[len(session.events)-len(wantTail):]; !reflect.DeepEqual(got, wantTail) {
+		t.Fatalf("cleanup events=%q, want %q", got, wantTail)
+	}
+}
+
+func TestCoordinateVSSSnapshotSetProbeAggregatesFailedDoCleanupErrors(t *testing.T) {
+	sources := []string{`C:\`, `D:\`}
+	doErr := errors.New("snapshot creation failed")
+	deleteErr := errors.New("partial set deletion failed")
+	releaseErr := errors.New("release failed")
+	session := newFakeVSSSnapshotSetSession(sources...)
+	session.doErr = doErr
+	session.deleteResult = vssSnapshotSetDeleteResult{DeletedSnapshots: 1}
+	session.deleteErr = deleteErr
+	session.releaseErr = releaseErr
+
+	err := coordinateVSSSnapshotSetProbe(sources, session, func([]VSSSnapshotSetProbeResult) error { return nil })
+	for _, wantErr := range []error{doErr, deleteErr, releaseErr} {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("error=%v, want aggregated %v", err, wantErr)
+		}
+	}
+	wantTail := []string{"do", "abort", "delete:set-1", "release"}
+	if got := session.events[len(session.events)-len(wantTail):]; !reflect.DeepEqual(got, wantTail) {
+		t.Fatalf("cleanup events=%q, want %q", got, wantTail)
+	}
+}
+
+func TestCoordinateVSSSnapshotSetProbeTreatsObjectNotFoundAsAlreadyClean(t *testing.T) {
+	sources := []string{`C:\`, `D:\`}
+	session := newFakeVSSSnapshotSetSession(sources...)
+	session.deleteResult = vssSnapshotSetDeleteResult{}
+	session.deleteErr = errVSSSnapshotSetNotFound
+
+	if err := coordinateVSSSnapshotSetProbe(sources, session, func([]VSSSnapshotSetProbeResult) error { return nil }); err != nil {
+		t.Fatalf("VSS_E_OBJECT_NOT_FOUND must mean no residual set: %v", err)
+	}
+	wantTail := []string{"complete", "delete:set-1", "release"}
+	if got := session.events[len(session.events)-len(wantTail):]; !reflect.DeepEqual(got, wantTail) {
+		t.Fatalf("cleanup events=%q, want %q", got, wantTail)
+	}
+}
+
+func TestCoordinateVSSSnapshotSetProbeDoesNotDeleteWithoutCreatedSetID(t *testing.T) {
+	sources := []string{`C:\`, `D:\`}
+	wantErr := errors.New("start failed")
+	session := newFakeVSSSnapshotSetSession(sources...)
+	session.startErr = wantErr
+
+	err := coordinateVSSSnapshotSetProbe(sources, session, func([]VSSSnapshotSetProbeResult) error { return nil })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error=%v, want %v", err, wantErr)
+	}
+	if session.deleteCalls != 0 || session.abortCalls != 0 {
+		t.Fatalf("delete=%d abort=%d, want neither before StartSnapshotSet succeeds", session.deleteCalls, session.abortCalls)
+	}
+	wantEvents := []string{"start", "release"}
+	if !reflect.DeepEqual(session.events, wantEvents) {
+		t.Fatalf("events=%q, want %q", session.events, wantEvents)
 	}
 }
