@@ -557,11 +557,12 @@ func (pbs *PBSClient) UploadBlob(name string, data []byte) error {
 	}
 	_, _ = io.Copy(io.Discard, resp2.Body)
 
+	digest := sha256.Sum256(out)
 	pbs.Manifest.Files = append(pbs.Manifest.Files, File{
 		CryptMode: "none",
-		Csum:      "",
+		Csum:      hex.EncodeToString(digest[:]),
 		Filename:  name,
-		Size:      int64(len(data)),
+		Size:      int64(len(out)),
 	})
 
 	return nil
