@@ -514,7 +514,7 @@ func backupWindowsDisk(client *pbscommon.PBSClient, index int) (int64, error) {
 			}
 		}
 
-		return uploadWorker(client, fmt.Sprintf("drive-sata%d.img.fidx", index), uint64(total), producer)
+		return uploadWorker(client, qemuArchiveFileName(index), uint64(total), producer)
 	})
 }
 
