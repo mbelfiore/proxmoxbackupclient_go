@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"text/template"
 
 	"clientcommon"
 	"fmt"
@@ -431,34 +429,6 @@ func main() {
 	}
 
 	if cfg.BackupType == "vm" {
-		type ConfigTemplate struct {
-			VMGenId string
-			VMID    int64
-			VMName  string
-			Disks   []BackupDisk
-			OS      string
-			SMBIOS  string
-		}
-
-		tmpl, err := template.New("qemuconfig").Parse(`boot: order=sata0
-cores: 4
-machine: q35
-memory: 2048
-name: {{.VMName}}
-numa: 0
-onboot: 0
-ostype: {{.OS}}
-scsihw: virtio-scsi-single
-smbios1: uuid={{.SMBIOS}}
-sockets: 1
-{{range .Disks}}
-sata{{.Index}}: local:{{.VMID}}/vm-{{.VMID}}-disk-{{.Index}}.raw,cache=writeback,discard=on,iothread=1,size={{.Size}}
-{{end}}
-vmgenid: {{.VMGenId}}
-		`)
-		if err != nil {
-			panic(err)
-		}
 		vmid, err := strconv.ParseInt(cfg.BackupID, 10, 32)
 		if err != nil {
 			panic(err)
@@ -467,8 +437,7 @@ vmgenid: {{.VMGenId}}
 		if err != nil {
 			panic(err)
 		}
-		wr := bytes.Buffer{}
-		cfgt := ConfigTemplate{
+		cfgt := QEMUConfigTemplate{
 			VMGenId: uuid.New().String(),
 			VMID:    vmid,
 			Disks:   disks,
@@ -480,8 +449,13 @@ vmgenid: {{.VMGenId}}
 		} else {
 			cfgt.OS = "l26"
 		}
-		tmpl.Execute(&wr, cfgt)
-		client.UploadBlob("qemu-server.conf.blob", wr.Bytes())
+		qemuConfig, err := renderQEMUConfig(cfgt)
+		if err != nil {
+			panic(err)
+		}
+		if err := client.UploadBlob("qemu-server.conf.blob", qemuConfig); err != nil {
+			panic(err)
+		}
 	}
 
 	err := client.UploadManifest()
